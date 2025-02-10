@@ -27,13 +27,16 @@ $skip_updated = $opt.s -or $opt.'skip-updated'
 $version = $opt.v ?? $opt.version
 $throw_error = $opt.t -or $opt.'throw-error'
 
-$parts = $target[0].Split('/')
-if ($parts.Length -eq 1) {
-    $parts += '*'
+if ($target[0] -contains '/') {
+    $parts = $target[0].Split('/')
+    $app = $parts[1]
+    $dir = "$bucketsdir\$($parts[0])"
+} else {
+    $app = $target[0]
+    $dir = $bucketsdir
 }
 
-$app = $parts[1]
-$dir = "$bucketsdir\$($parts[0])"
+debug "checkver $app $dir"
 $netsted_args = @{
     App         = $app
     Dir         = $dir
