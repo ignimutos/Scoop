@@ -63,6 +63,7 @@ function install_app($app, $architecture, $global, $suggested, $use_cache = $tru
     env_set $manifest $global $architecture
 
     # persist data
+    persist_link $manifest $original_dir $persist_dir
     persist_data $manifest $original_dir $persist_dir
     persist_permission $manifest $global
 
@@ -991,6 +992,75 @@ function show_suggestions($suggested) {
     }
 }
 
+function persist_link_def($link) {
+    if ($link -is [Array]) {
+        $source = $link[0]
+        $target = $link[1]
+    } else {
+        $source = $link
+        $target = ''
+    }
+
+    return $ExecutionContext.InvokeCommand.ExpandString($source), $target
+}
+
+function persist_link($manifest, $original_dir, $persist_dir) {
+    $link = $manifest.persist_link
+    if ($link) {
+        $persist_dir = ensure $persist_dir
+
+        if ($link -is [String]) {
+            $link = @($link)
+        }
+
+        $link | ForEach-Object {
+            $source, $target = persist_link_def $_
+
+            $source = $source.TrimEnd('/').TrimEnd('\\')
+            $target = "$persist_dir\$target"
+
+            Write-Host "Link $source to $target"
+
+            if (Test-Path $target) {
+                if (Test-Path $source) {
+                    if ($null -ne $(Get-Item $source).LinkType) {
+                        Remove-Item $source -Force | Out-Null
+                    } else {
+                        $leaf = $(Split-Path $source -Leaf)
+                        Move-Item -Force $source "$persist_dir\$leaf.original" | Out-Null
+                        warn "found exist data in $source, move it to $persist_dir\$leaf.original"
+                    }
+                }
+            } elseif (Test-Path $source) {
+                # ensure target parent folder exist
+                ensure (Split-Path -Path $target) | Out-Null
+                if ($null -eq $(Get-Item $source).LinkType) {
+                    Remove-Item $source -Force | Out-Null
+                } else {
+                    Move-Item -Force $source $target | Out-Null
+                }
+                # we don't have neither source nor target data! we need to create an empty target,
+                # but we can't make a judgement that the data should be a file or directory...
+                # so we create a directory by default. to avoid this, use pre_install
+                # to create the source file before persisting (DON'T use post_install)
+            } else {
+                $target = New-Object System.IO.DirectoryInfo($target)
+                ensure $target | Out-Null
+            }
+
+            # create link
+            if (is_directory $target) {
+                # target is a directory, create junction
+                New-DirectoryJunction $source $target | Out-Null
+                attrib $source +R /L
+            } else {
+                # target is a file, create hard link
+                New-Item -Path $source -ItemType HardLink -Value $target | Out-Null
+            }
+        }
+    }
+}
+
 # Persistent data
 function persist_def($persist) {
     if ($persist -is [Array]) {
@@ -1067,6 +1137,30 @@ function unlink_persist_data($manifest, $dir) {
         @($persist) | ForEach-Object {
             $source, $null = persist_def $_
             $source = Get-Item "$dir\$source" -ErrorAction SilentlyContinue
+            if ($source.LinkType) {
+                $source_path = $source.FullName
+                # directory (junction)
+                if ($source -is [System.IO.DirectoryInfo]) {
+                    # remove read-only attribute on the link
+                    attrib -R /L $source_path
+                    # remove the junction
+                    Remove-Item -Path $source_path -Recurse -Force -ErrorAction SilentlyContinue
+                } else {
+                    # remove the hard link
+                    Remove-Item -Path $source_path -Force -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+}
+
+function unlink_persist_link_data($manifest, $dir) {
+    $link = $manifest.persist_link
+    # unlink all junction / hard link in the directory
+    if ($link) {
+        @($link) | ForEach-Object {
+            $source, $null = persist_link_def $_
+            $source = Get-Item "$source" -ErrorAction SilentlyContinue
             if ($source.LinkType) {
                 $source_path = $source.FullName
                 # directory (junction)
