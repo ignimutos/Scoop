@@ -52,6 +52,8 @@ function install_app($app, $architecture, $global, $suggested, $use_cache = $tru
     $fname = Invoke-ScoopDownload $app $version $manifest $bucket $architecture $dir $use_cache $check_hash
     Invoke-Extraction -Path $dir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture
     Invoke-HookScript -HookType 'pre_install' -Manifest $manifest -ProcessorArchitecture $architecture
+    # persist link, should run before installation
+    persist_link $manifest $original_dir $persist_dir
 
     Invoke-Installer -Path $dir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture -AppName $app -Global:$global
     ensure_install_dir_not_in_path $dir $global
@@ -63,7 +65,6 @@ function install_app($app, $architecture, $global, $suggested, $use_cache = $tru
     env_set $manifest $global $architecture
 
     # persist data
-    persist_link $manifest $original_dir $persist_dir
     persist_data $manifest $original_dir $persist_dir
     persist_permission $manifest $global
 
@@ -1012,41 +1013,28 @@ function persist_link($manifest, $original_dir, $persist_dir) {
         if ($link -is [String]) {
             $link = @($link)
         }
-
         $link | ForEach-Object {
             $source, $target = persist_link_def $_
 
             $source = $source.TrimEnd('/').TrimEnd('\\')
             $target = "$persist_dir\$target"
 
-            Write-Host "Link $source to $target"
-
-            if (Test-Path $target) {
-                if (Test-Path $source) {
-                    if ($null -ne $(Get-Item $source).LinkType) {
-                        Remove-Item $source -Force | Out-Null
+            Write-Host "Linking $source to $target"
+            if (Test-Path $source) {
+                $source_item = Get-Item $source
+                if ($null -eq $source_item.LinkType) {
+                    if (Test-Path $target) {
+                        $source_name = $source_item.Name
+                        Move-Item -Force $source "$persist_dir\$source_name.original" | Out-Null
+                        warn "found exist data in $source, move it to $persist_dir\$source_name"
                     } else {
-                        $leaf = $(Split-Path $source -Leaf)
-                        Move-Item -Force $source "$persist_dir\$leaf.original" | Out-Null
-                        warn "found exist data in $source, move it to $persist_dir\$leaf.original"
+                        Move-Item $source $target -Force | Out-Null
                     }
-                }
-            } elseif (Test-Path $source) {
-                # ensure target parent folder exist
-                ensure (Split-Path -Path $target) | Out-Null
-                if ($null -eq $(Get-Item $source).LinkType) {
-                    Remove-Item $source -Force | Out-Null
                 } else {
-                    Move-Item -Force $source $target | Out-Null
+                    Remove-Item $source -Force -Recurse | Out-Null
                 }
-                # we don't have neither source nor target data! we need to create an empty target,
-                # but we can't make a judgement that the data should be a file or directory...
-                # so we create a directory by default. to avoid this, use pre_install
-                # to create the source file before persisting (DON'T use post_install)
-            } else {
-                $target = New-Object System.IO.DirectoryInfo($target)
-                ensure $target | Out-Null
             }
+            New-Item $target -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
 
             # create link
             if (is_directory $target) {
@@ -1219,4 +1207,83 @@ function New-DirectoryJunction($source, $target) {
     } else {
         New-Item -Path $source -ItemType Junction -Value $target
     }
+}
+
+# set value to file
+# behavior of set bool is different between json and otherfile
+# json set value with $true or $false
+# other file set value with string 'true' or 'false'
+function Set-Value() {
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$File,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string[]]$ValuePath,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [object]$Value,
+
+        [ValidateNotNullOrEmpty()]
+        [string]$Type = [System.IO.Path]::GetExtension($File).TrimStart('.').ToLower()
+    )
+    if (![System.IO.Path]::IsPathRooted($File)) {
+        $File = "$persist_dir\$File"
+    }
+    [System.IO.Directory]::CreateDirectory($(Split-Path $File)) | Out-Null
+    switch ($Type) {
+        'json' {
+            if (Test-Path $File) {
+                $data = Get-Content -Path $File | ConvertFrom-Json -AsHashtable
+            } else {
+                $data = @{}
+            }
+            $cur = $data
+            $len = $ValuePath.Length
+            for ($i = 0; $i -lt $len; $i++) {
+                $prop = $ValuePath[$i]
+                if ($i -lt ($len - 1)) {
+                    if (!$cur.ContainsKey($prop)) {
+                        $cur[$prop] = @{}
+                    }
+                } else {
+                    $cur[$prop] = $Value
+                    break
+                }
+                $cur = $cur[$prop]
+            }
+            $data | ConvertTo-Json | Set-Content -Path $File -Force
+        }
+        'ini' {
+            if ($ValuePath.Length -ne 2) {
+                error 'INI type only support 2 path element'
+                exit 1
+            }
+            $section = $ValuePath[0]
+            $prop = $ValuePath[1]
+            if (Test-Path $File) {
+                $data = Get-Content -Path $File -Raw
+                if ($data -match "(?m)^\[$section\]") {
+                    $regex = "(?m)(?<=^\[$section\][^\[]*?$prop\s*=\s*)[^\r\n]*"
+                    if ($data -match $regex) {
+                        $data = $data -replace $regex, $Value
+                    } else {
+                        $data = $data -replace "(?m)(\[$section\])", "`$1`r`n$prop=$Value"
+                    }
+                } else {
+                    $data += "`r`n[$section]`r`n$prop=$Value"
+                }
+            } else {
+                $data = "[$section]`r`n$prop=$Value"
+            }
+            $data | Set-Content -Path $File -Force
+        }
+        Default {
+            throw 'unknown type to process'
+        }
+    }
+
 }
