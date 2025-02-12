@@ -151,6 +151,13 @@
 # aria2-options:
 #       Array of additional aria2 options.
 #       See: 'https://aria2.github.io/manual/en/html/aria2c.html#options'
+#
+# buckets configuration
+# -------------------
+#
+# bucket-default-priority:
+#       Default priority of not known buckets.
+
 
 param($name, $value)
 
@@ -166,7 +173,7 @@ if (!$name) {
     Write-Host "'$name' has been set to '$value'"
 } else {
     $value = get_config $name
-    if($null -eq $value) {
+    if ($null -eq $value) {
         Write-Host "'$name' is not set"
     } else {
         if ($value -is [System.DateTime]) {

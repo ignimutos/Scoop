@@ -1,6 +1,4 @@
 {
-    "ocdp": "git@github.com:ignimutos/ScoopOCDPrivate.git",
-    "ocd": "git@github.com:ignimutos/ScoopOCD.git",
     "main": "https://github.com/ScoopInstaller/Main",
     "extras": "https://github.com/ScoopInstaller/Extras",
     "versions": "https://github.com/ScoopInstaller/Versions",
