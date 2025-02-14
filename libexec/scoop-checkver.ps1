@@ -27,7 +27,7 @@ $skip_updated = $opt.s -or $opt.'skip-updated'
 $version = $opt.v ?? $opt.version
 $throw_error = $opt.t -or $opt.'throw-error'
 
-if ($target[0] -contains '/') {
+if ($target[0] -like '*/*') {
     $parts = $target[0].Split('/')
     $app = $parts[1]
     $dir = "$bucketsdir\$($parts[0])"
@@ -36,7 +36,6 @@ if ($target[0] -contains '/') {
     $dir = $bucketsdir
 }
 
-debug "checkver $app $dir"
 $netsted_args = @{
     App         = $app
     Dir         = $dir
@@ -46,7 +45,7 @@ $netsted_args = @{
     SkipUpdated = $skip_updated
     ThrowError  = $throw_error
 }
-
+debug "checkver $($netsted_args.GetEnumerator() | ForEach-Object { $_ })"
 & "$PSScriptRoot\..\bin\checkver.ps1" @netsted_args
 
 exit 0
