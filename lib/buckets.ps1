@@ -77,8 +77,8 @@ function Get-LocalBucket {
 
             if (Get-Member -InputObject $bucketPriority -Name $_ -MemberType Properties) {
                 $priority = $bucketPriority.$_
-            } else {
-                $priority = $priority ?? $bucketDefaultPriority
+            } elseif (!$priority) {
+                $priority = $bucketDefaultPriority
             }
 
             [PSCustomObject]@{
@@ -181,7 +181,9 @@ function add_bucket($name, $repo, $priority) {
         Set-ScoopDB -Path (Get-ChildItem (Find-BucketDirectory $name) -Filter '*.json' -Recurse).FullName
     }
 
-    $priority = $priority ?? $(bucket_default_priority)
+    if (!$priority) {
+        $priority = bucket_default_priority
+    }
     $bucketPriority = get_config 'bucket-priority' ([PSCustomObject]@{})
     if (Get-Member -InputObject $bucketPriority -Name $name -MemberType Properties) {
         $bucketPriority.$name = $priority
