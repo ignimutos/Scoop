@@ -88,6 +88,10 @@
 #       This is essential for checkver and similar functions to run without
 #       incurring rate limits and download from private repositories.
 #
+# gh_proxy:
+#       GitHub cdn to accelerate download speed.
+#       Based on repo: https://github.com/hunshcn/gh-proxy
+#
 # virustotal_api_key:
 #       API key used for uploading/scanning files using virustotal.
 #       See: 'https://support.virustotal.com/hc/en-us/articles/115002088769-Please-give-me-an-API-key'

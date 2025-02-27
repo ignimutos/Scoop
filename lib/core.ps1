@@ -1361,6 +1361,10 @@ function handle_special_urls($url)
         if ((Invoke-RestMethod -Uri $privateUrl -Headers $headers).Private) {
             $url = ((Invoke-RestMethod -Uri $assetUrl -Headers $headers).Assets | Where-Object -Property Name -EQ -Value $Matches.file).Url, $Matches.filename -join ''
         }
+
+
+        $gh_cdn = get_config GH_PROXY "https://ghfast.top"
+        $url = "$gh_cdn/$url"
     }
 
     return $url
