@@ -1024,9 +1024,8 @@ function persist_link($manifest, $original_dir, $persist_dir) {
                 $source_item = Get-Item $source
                 if ($null -eq $source_item.LinkType) {
                     if (Test-Path $target) {
-                        $source_name = $source_item.Name
-                        Move-Item -Force $source "$persist_dir\$source_name.original" | Out-Null
-                        warn "found exist data in $source, move it to $persist_dir\$source_name"
+                        Move-Item -Force $source "$target.original" | Out-Null
+                        warn "found exist data in $source, move it to $target.original"
                     } else {
                         Move-Item $source $target -Force | Out-Null
                     }
@@ -1034,7 +1033,9 @@ function persist_link($manifest, $original_dir, $persist_dir) {
                     Remove-Item $source -Force -Recurse | Out-Null
                 }
             }
-            New-Item $target -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+            if (!(Test-Path $target)) {
+                New-Item $target -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+            }
 
             # create link
             if (is_directory $target) {
