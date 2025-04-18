@@ -110,6 +110,7 @@ if (!$apps) { exit 0 }
         try {
             # unlink all potential old link before doing recursive Remove-Item
             unlink_persist_data $manifest $dir
+            unlink_persist_link_data $manifest $dir
             Remove-Item $dir -Recurse -Force -ErrorAction Stop
         } catch {
             error "Couldn't remove '$(friendly_path $dir)'; it may be in use."

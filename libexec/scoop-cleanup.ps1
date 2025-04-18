@@ -45,8 +45,10 @@ function cleanup($app, $global, $verbose, $cache) {
         $version = $_
         Write-Host " $version" -NoNewline
         $dir = versiondir $app $version $global
+        $manifest = (installed_manifest $app $version $global)
         # unlink all potential old link before doing recursive Remove-Item
-        unlink_persist_data (installed_manifest $app $version $global) $dir
+        unlink_persist_data $manifest $dir
+        unlink_persist_link_data $manifest $dir
         Remove-Item $dir -ErrorAction Stop -Recurse -Force
     }
     $leftVersions = Get-ChildItem $appDir

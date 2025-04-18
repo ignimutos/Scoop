@@ -14,14 +14,14 @@
 . "$PSScriptRoot\..\lib\shortcuts.ps1"
 
 $opt, $apps, $err = getopt $args 'a' 'all'
-if($err) { "scoop reset: $err"; exit 1 }
+if ($err) { "scoop reset: $err"; exit 1 }
 $all = $opt.a -or $opt.all
 
-if(!$apps -and !$all) { error '<app> missing'; my_usage; exit 1 }
+if (!$apps -and !$all) { error '<app> missing'; my_usage; exit 1 }
 
-if($apps -eq '*' -or $all) {
-    $local = installed_apps $false | ForEach-Object { ,@($_, $false) }
-    $global = installed_apps $true | ForEach-Object { ,@($_, $true) }
+if ($apps -eq '*' -or $all) {
+    $local = installed_apps $false | ForEach-Object { , @($_, $false) }
+    $global = installed_apps $true | ForEach-Object { , @($_, $true) }
     $apps = @($local) + @($global)
 }
 
@@ -30,17 +30,17 @@ $apps | ForEach-Object {
 
     $app, $bucket, $version = parse_app $app
 
-    if(($global -eq $null) -and (installed $app $true)) {
+    if (($global -eq $null) -and (installed $app $true)) {
         # set global flag when running reset command on specific app
         $global = $true
     }
 
-    if($app -eq 'scoop') {
+    if ($app -eq 'scoop') {
         # skip scoop
         return
     }
 
-    if(!(installed $app)) {
+    if (!(installed $app)) {
         error "'$app' isn't installed"
         return
     }
@@ -57,12 +57,12 @@ $apps | ForEach-Object {
         return
     }
 
-    if($global -and !(is_admin)) {
+    if ($global -and !(is_admin)) {
         warn "'$app' ($version) is a global app. You need admin rights to reset it. Skipping."
         return
     }
 
-    write-host "Resetting $app ($version)."
+    Write-Host "Resetting $app ($version)."
 
     $dir = Convert-Path (versiondir $app $version $global)
     $original_dir = $dir
@@ -87,6 +87,7 @@ $apps | ForEach-Object {
     env_set $manifest $global $architecture
     # unlink all potential old link before re-persisting
     unlink_persist_data $manifest $original_dir
+    unlink_persist_link_data $manifest $original_dir
     persist_data $manifest $original_dir $persist_dir
     persist_permission $manifest $global
 }
