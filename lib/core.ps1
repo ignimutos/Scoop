@@ -1361,8 +1361,8 @@ function handle_special_urls($url) {
 
 
         $gh_proxy = get_config GH_PROXY ''
-        if ($gh_proxy -eq '') {
-            $url = "$gh_cdn/$url"
+        if ($gh_proxy -ne '') {
+            $url = "$gh_proxy/$url"
         }
     }
 
