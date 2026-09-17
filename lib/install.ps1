@@ -1021,16 +1021,76 @@ function persist_link($manifest, $original_dir, $persist_dir) {
 
             Write-Host "Linking $source to $target"
             if (Test-Path $source) {
-                $source_item = Get-Item $source
+                $source_item = Get-Item $source -Force
+
+                # Check for running processes in the source directory
+                if ($source_item -is [System.IO.DirectoryInfo]) {
+                    $running = Get-Process | Where-Object {
+                        try { $_.Path -and $_.Path.StartsWith($source, [StringComparison]::OrdinalIgnoreCase) }
+                        catch { $false }
+                    }
+                    if ($running) {
+                        error "Cannot replace $source - the following processes are using it:"
+                        $running | ForEach-Object { Write-Host "  - $($_.Name) (PID: $($_.Id))" }
+                        abort "Please close these processes and try again."
+                    }
+                }
+
                 if ($null -eq $source_item.LinkType) {
+                    # source exists but is not a link (e.g., installed by another installer)
+                    # backup existing data before replacing
+                    $backup_suffix = "_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
                     if (Test-Path $target) {
-                        Move-Item -Force $source "$target.original" | Out-Null
-                        warn "found exist data in $source, move it to $target.original"
+                        # both source and target exist, backup source
+                        $backup_path = "$target$backup_suffix"
+                        try {
+                            Move-Item -Force $source $backup_path -ErrorAction Stop | Out-Null
+                            warn "Found existing data in $source, moved to $backup_path"
+                        } catch {
+                            error "Cannot move $source to $backup_path : $_"
+                            warn "Trying to remove $source instead..."
+                            try {
+                                Remove-Item $source -Force -Recurse -ErrorAction Stop | Out-Null
+                            } catch {
+                                $msg = "Cannot remove $source : $_"
+                                if ($_.Exception.Message -match 'Access.*denied|denied') {
+                                    $msg += "`n`nPossible solutions:"
+                                    $msg += "`n  1. Run 'scoop install powertoys --global' with administrator privileges"
+                                    $msg += "`n  2. Manually delete: Remove-Item '$source' -Force -Recurse"
+                                    $msg += "`n  3. Uninstall conflicting software first via Windows Settings"
+                                }
+                                abort $msg
+                            }
+                        }
                     } else {
-                        Move-Item $source $target -Force | Out-Null
+                        # only source exists, move it to target
+                        try {
+                            Move-Item $source $target -Force -ErrorAction Stop | Out-Null
+                        } catch {
+                            $msg = "Cannot move $source to $target : $_"
+                            if ($_.Exception.Message -match 'Access.*denied|denied') {
+                                $msg += "`n`nPossible solutions:"
+                                $msg += "`n  1. Run with administrator privileges"
+                                $msg += "`n  2. Manually delete: Remove-Item '$source' -Force -Recurse"
+                            }
+                            abort $msg
+                        }
                     }
                 } else {
-                    Remove-Item $source -Force -Recurse | Out-Null
+                    # source is already a link, remove it
+                    try {
+                        # Remove read-only attribute for junctions/links
+                        if ($source_item -is [System.IO.DirectoryInfo]) {
+                            attrib -R /L $source
+                        }
+                        Remove-Item $source -Force -Recurse -ErrorAction Stop | Out-Null
+                    } catch {
+                        $msg = "Cannot remove link $source : $_"
+                        if ($_.Exception.Message -match 'Access.*denied|denied') {
+                            $msg += "`n`nTry: attrib -R /L `"$source`" && rmdir `"$source`""
+                        }
+                        abort $msg
+                    }
                 }
             }
             if (!(Test-Path $target)) {
@@ -1088,9 +1148,11 @@ function persist_data($manifest, $original_dir, $persist_dir) {
 
             # if we have had persist data in the store, just create link and go
             if (Test-Path $target) {
-                # if there is also a source data, rename it (to keep a original backup)
+                # if there is also a source data, rename it with timestamp (to keep a backup)
                 if (Test-Path $source) {
-                    Move-Item -Force $source "$source.original"
+                    $backup_name = "$source.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                    Move-Item -Force $source $backup_name
+                    warn "Found existing data at $source, moved to $backup_name"
                 }
                 # we don't have persist data in the store, move the source to target, then create link
             } elseif (Test-Path $source) {
