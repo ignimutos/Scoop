@@ -17,12 +17,12 @@
 #   see bin/checkver.ps1
 
 . "$PSScriptRoot\..\lib\getopt.ps1"
-$opt, $target, $err = getopt $args 'ufsvt:' 'update', 'force-update', 'skip-updated', 'version', 'throw-error'
+$opt, $target, $err = getopt $args 'uUfFsv:t' 'update', 'force-update', 'skip-updated', 'version:', 'throw-error'
 if ($err) { "scoop checkver: $err"; exit 1 }
 if ($target.Length -eq 0) { 'no app present'; exit 1 }
 
-$update = $opt.u -or $opt.update
-$force_update = $opt.f -or $opt.'force-update'
+$update = $opt.u -or $opt.U -or $opt.update
+$force_update = $opt.f -or $opt.F -or $opt.'force-update'
 $skip_updated = $opt.s -or $opt.'skip-updated'
 $version = $opt.v ?? $opt.version
 $throw_error = $opt.t -or $opt.'throw-error'
