@@ -30,6 +30,7 @@ if ($global -and !(is_admin)) {
 }
 
 foreach ($app in $apps) {
+    $app, $bucket, $null = parse_app $app # 'bucket/app' is accepted, but only the app name is used to locate the directory
 
     if ($app -eq 'scoop') {
         $hold_update_until = [System.DateTime]::Now.AddDays(1)

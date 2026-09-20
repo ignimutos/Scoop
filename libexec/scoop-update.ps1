@@ -260,6 +260,8 @@ function Sync-Bucket {
 }
 
 function update($app, $global, $quiet = $false, $independent, $suggested, $use_cache = $true, $check_hash = $true) {
+    # $app is rewritten to 'bucket/app' (or the url) below, but the hold state is stored per app name
+    $app_name = $app
     $old_version = Select-CurrentVersion -AppName $app -Global:$global
     $old_manifest = installed_manifest $app $old_version $global
     $install = install_info $app $old_version $global
@@ -389,10 +391,10 @@ function update($app, $global, $quiet = $false, $independent, $suggested, $use_c
     }
 
     # re-hold the app when it was held before, since install.json is rewritten by the install above
-    if ($was_held -and $ignore_hold -and (installed $app $global)) {
+    if ($was_held -and $ignore_hold -and (installed $app_name $global)) {
         $holdArgs = @()
         if ($global) { $holdArgs += '--global' }
-        & "$PSScriptRoot\scoop-hold.ps1" $app @holdArgs
+        & "$PSScriptRoot\scoop-hold.ps1" $app_name @holdArgs
     }
 }
 
