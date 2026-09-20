@@ -1017,7 +1017,8 @@ function persist_link($manifest, $original_dir, $persist_dir) {
             $source, $target = persist_link_def $_
 
             $source = $source.TrimEnd('/').TrimEnd('\\')
-            $target = "$persist_dir\$target"
+            # a plain string carries no target, which lands the whole persist dir here
+            $target = "$persist_dir\$target".TrimEnd('/').TrimEnd('\\')
 
             Write-Host "Linking $source to $target"
             if (Test-Path $source) {
@@ -1036,13 +1037,34 @@ function persist_link($manifest, $original_dir, $persist_dir) {
                     }
                 }
 
-                if ($null -eq $source_item.LinkType) {
-                    # source exists but is not a link (e.g., installed by another installer)
-                    # backup existing data before replacing
-                    $backup_suffix = "_backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-                    if (Test-Path $target) {
-                        # both source and target exist, backup source
-                        $backup_path = "$target$backup_suffix"
+                # a stale link or an empty source is not data to keep: drop it and relink
+                if (can_discard_source $source $source_item (Test-Path $target)) {
+                    remove_persist_source $source $source_item
+                } elseif (Test-Path $target) {
+                    if (is_empty_data $target) {
+                        # an empty store entry is not data either (a plain-string persist_link
+                        # pre-creates it), so move the source in rather than off to a backup
+                        Remove-Item $target -Force -Recurse -ErrorAction Stop
+                        ensure (Split-Path -Path $target) | Out-Null
+                        try {
+                            Move-Item $source $target -Force -ErrorAction Stop | Out-Null
+                        } catch {
+                            $msg = "Cannot move $source to $target : $_"
+                            if ($_.Exception.Message -match 'Access.*denied|denied') {
+                                $msg += "`n`nPossible solutions:"
+                                $msg += "`n  1. Run with administrator privileges"
+                                $msg += "`n  2. Manually delete: Remove-Item '$source' -Force -Recurse"
+                            }
+                            abort $msg
+                        }
+                    } else {
+                        # both source and target hold data, backup source
+                        $backup_path = "$target.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                        $i = 1
+                        while (Test-Path $backup_path) {
+                            $backup_path = "$target.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')($i)"
+                            $i++
+                        }
                         try {
                             Move-Item -Force $source $backup_path -ErrorAction Stop | Out-Null
                             warn "Found existing data in $source, moved to $backup_path"
@@ -1062,32 +1084,18 @@ function persist_link($manifest, $original_dir, $persist_dir) {
                                 abort $msg
                             }
                         }
-                    } else {
-                        # only source exists, move it to target
-                        try {
-                            Move-Item $source $target -Force -ErrorAction Stop | Out-Null
-                        } catch {
-                            $msg = "Cannot move $source to $target : $_"
-                            if ($_.Exception.Message -match 'Access.*denied|denied') {
-                                $msg += "`n`nPossible solutions:"
-                                $msg += "`n  1. Run with administrator privileges"
-                                $msg += "`n  2. Manually delete: Remove-Item '$source' -Force -Recurse"
-                            }
-                            abort $msg
-                        }
                     }
                 } else {
-                    # source is already a link, remove it
+                    # only source exists, move it to target
                     try {
-                        # Remove read-only attribute for junctions/links
-                        if ($source_item -is [System.IO.DirectoryInfo]) {
-                            attrib -R /L $source
-                        }
-                        Remove-Item $source -Force -Recurse -ErrorAction Stop | Out-Null
+                        ensure (Split-Path -Path $target) | Out-Null
+                        Move-Item $source $target -Force -ErrorAction Stop | Out-Null
                     } catch {
-                        $msg = "Cannot remove link $source : $_"
+                        $msg = "Cannot move $source to $target : $_"
                         if ($_.Exception.Message -match 'Access.*denied|denied') {
-                            $msg += "`n`nTry: attrib -R /L `"$source`" && rmdir `"$source`""
+                            $msg += "`n`nPossible solutions:"
+                            $msg += "`n  1. Run with administrator privileges"
+                            $msg += "`n  2. Manually delete: Remove-Item '$source' -Force -Recurse"
                         }
                         abort $msg
                     }
@@ -1127,6 +1135,46 @@ function persist_def($persist) {
     return $source, $target
 }
 
+# an empty directory holds no data worth backing up.
+# hidden items count as data, hence -Force
+function is_empty_data($path) {
+    $item = Get-Item $path -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return $true }
+    if ($item -is [System.IO.DirectoryInfo]) {
+        return !(Get-ChildItem $path -Force -ErrorAction SilentlyContinue)
+    }
+    return ($item.Length -eq 0)
+}
+
+# a stale link, or an empty source, carries nothing worth keeping.
+# a zero-length *file* is only dispensable when the store already holds the entry:
+# otherwise we would create a directory in the store and flip a file persist
+# (e.g. 'persist': 'config.ini') into a junction, so it falls through to the move
+function can_discard_source($source, $source_item, $target_exists) {
+    if ($source_item.LinkType) { return $true }
+    if (is_empty_data $source) {
+        if ($source_item -is [System.IO.DirectoryInfo]) { return $true }
+        return $target_exists
+    }
+    return $false
+}
+
+# remove a leftover link or an empty source.
+# junctions get the read-only attribute when they are created, which makes a bare
+# Remove-Item fail, so clear it first; report actionable hints on failure
+function remove_persist_source($source, $source_item) {
+    try {
+        if ($source_item.LinkType) { attrib -R /L $source }
+        Remove-Item $source -Force -Recurse -ErrorAction Stop | Out-Null
+    } catch {
+        $msg = "Cannot remove $source : $_"
+        if ($_.Exception.Message -match 'Access.*denied|denied') {
+            $msg += "`n`nTry: attrib -R /L `"$source`" && rmdir `"$source`""
+        }
+        abort $msg
+    }
+}
+
 function persist_data($manifest, $original_dir, $persist_dir) {
     $persist = $manifest.persist
     if ($persist) {
@@ -1143,19 +1191,43 @@ function persist_data($manifest, $original_dir, $persist_dir) {
 
             $source = $source.TrimEnd('/').TrimEnd('\\')
 
-            $source = "$dir\$source"
-            $target = "$persist_dir\$target"
+            $source = "$original_dir\$source"
+            $target = "$persist_dir\$target".TrimEnd('/').TrimEnd('\\')
+
+            $target_exists = Test-Path $target
+            $source_exists = Test-Path $source
+            $source_item = if ($source_exists) { Get-Item $source -Force } else { $null }
+
+            # a stale link, or an empty source, holds nothing worth backing up: drop it
+            if ($source_exists -and (can_discard_source $source $source_item $target_exists)) {
+                remove_persist_source $source $source_item
+                $source_exists = $false
+            }
+
+            # an empty directory in the store is not data, either - the persist_link
+            # fallback may have pre-created it. clear it so real data can move in
+            if ($source_exists -and $target_exists -and (is_empty_data $target)) {
+                Remove-Item $target -Force -Recurse -ErrorAction Stop
+                $target_exists = $false
+            }
 
             # if we have had persist data in the store, just create link and go
-            if (Test-Path $target) {
-                # if there is also a source data, rename it with timestamp (to keep a backup)
-                if (Test-Path $source) {
-                    $backup_name = "$source.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+            if ($target_exists) {
+                if ($source_exists) {
+                    # rename the source with a timestamp (to keep a backup). keep it in the
+                    # store: a version dir is deleted by 'scoop cleanup', which would take
+                    # the backup with it. two entries may share a timestamp, so number them
+                    $backup_name = "$target.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                    $i = 1
+                    while (Test-Path $backup_name) {
+                        $backup_name = "$target.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')($i)"
+                        $i++
+                    }
                     Move-Item -Force $source $backup_name
                     warn "Found existing data at $source, moved to $backup_name"
                 }
+            } elseif ($source_exists) {
                 # we don't have persist data in the store, move the source to target, then create link
-            } elseif (Test-Path $source) {
                 # ensure target parent folder exist
                 ensure (Split-Path -Path $target) | Out-Null
                 Move-Item $source $target
