@@ -1146,6 +1146,27 @@ function is_empty_data($path) {
     return ($item.Length -eq 0)
 }
 
+# a source holding only the copy the archive shipped is not the user's data: for a
+# persist entry the store copy is the one the user edited (notepad++ ships plugins/,
+# themes/ and userDefineLangs/ inside the zip, so a reinstall would otherwise back that
+# bundled copy up every time and leave a stream of '.backup_*' entries in the store).
+# extracted files keep the time they were built into the archive, while anything written
+# after the extraction is newer than the version dir, so comparing the two tells a
+# bundled copy from real data. look at the files, not at the source's own mtime: that one
+# is bumped while its children are extracted and can overtake the version dir's. strict
+# comparison so a same-second write counts as data. do not use CreationTime: a move
+# resets it
+function is_pristine_source($source_item, $archive_time) {
+    if ($source_item -isnot [System.IO.DirectoryInfo]) {
+        return $source_item.LastWriteTime -lt $archive_time
+    }
+    $files = @(Get-ChildItem $source_item.FullName -Recurse -Force -File -ErrorAction SilentlyContinue)
+    # no files at all: nothing was written, an empty directory is handled by is_empty_data
+    if (!$files) { return $true }
+    $newest = ($files | Measure-Object -Property LastWriteTime -Maximum).Maximum
+    return $newest -lt $archive_time
+}
+
 # a stale link, or an empty source, carries nothing worth keeping.
 # a zero-length *file* is only dispensable when the store already holds the entry:
 # otherwise we would create a directory in the store and flip a file persist
@@ -1184,6 +1205,12 @@ function persist_data($manifest, $original_dir, $persist_dir) {
             $persist = @($persist)
         }
 
+        # 'scoop update' reuses the version dir of the version being replaced when the
+        # version string is unchanged, so the extraction time is the newest mtime there.
+        # if it cannot be read, nothing counts as pristine and the backup path still runs
+        $archive_item = Get-Item $original_dir -Force -ErrorAction SilentlyContinue
+        $archive_time = if ($archive_item) { $archive_item.LastWriteTime } else { [datetime]::MinValue }
+
         $persist | ForEach-Object {
             $source, $target = persist_def $_
 
@@ -1209,6 +1236,13 @@ function persist_data($manifest, $original_dir, $persist_dir) {
             if ($source_exists -and $target_exists -and (is_empty_data $target)) {
                 Remove-Item $target -Force -Recurse -ErrorAction Stop
                 $target_exists = $false
+            }
+
+            # a source that is still the archive's own copy is not user data: drop the
+            # bundled copy rather than backing it up on every reinstall
+            if ($source_exists -and $target_exists -and (is_pristine_source $source_item $archive_time)) {
+                remove_persist_source $source $source_item
+                $source_exists = $false
             }
 
             # if we have had persist data in the store, just create link and go
@@ -1267,10 +1301,18 @@ function unlink_persist_data($manifest, $dir) {
                     # remove read-only attribute on the link
                     attrib -R /L $source_path
                     # remove the junction
-                    Remove-Item -Path $source_path -Recurse -Force -ErrorAction SilentlyContinue
+                    try {
+                        Remove-Item -Path $source_path -Recurse -Force -ErrorAction Stop
+                    } catch {
+                        $msg = "Cannot unlink persisted data '$source_path': $_"
+                        if ($_.Exception.Message -match 'Access.*denied|denied') {
+                            $msg += "`n`nTry: attrib -R /L `"$source_path`" && rmdir `"$source_path`""
+                        }
+                        throw $msg
+                    }
                 } else {
                     # remove the hard link
-                    Remove-Item -Path $source_path -Force -ErrorAction SilentlyContinue
+                    Remove-Item -Path $source_path -Force -ErrorAction Stop
                 }
             }
         }
@@ -1291,10 +1333,18 @@ function unlink_persist_link_data($manifest, $dir) {
                     # remove read-only attribute on the link
                     attrib -R /L $source_path
                     # remove the junction
-                    Remove-Item -Path $source_path -Recurse -Force -ErrorAction SilentlyContinue
+                    try {
+                        Remove-Item -Path $source_path -Recurse -Force -ErrorAction Stop
+                    } catch {
+                        $msg = "Cannot unlink persisted data '$source_path': $_"
+                        if ($_.Exception.Message -match 'Access.*denied|denied') {
+                            $msg += "`n`nTry: attrib -R /L `"$source_path`" && rmdir `"$source_path`""
+                        }
+                        throw $msg
+                    }
                 } else {
                     # remove the hard link
-                    Remove-Item -Path $source_path -Force -ErrorAction SilentlyContinue
+                    Remove-Item -Path $source_path -Force -ErrorAction Stop
                 }
             }
         }

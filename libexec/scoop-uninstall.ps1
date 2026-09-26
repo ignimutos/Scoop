@@ -46,6 +46,7 @@ if (!$apps) { exit 0 }
 
 :app_loop foreach ($_ in $apps) {
     ($app, $global) = $_
+    $failed = $false
 
     $version = Select-CurrentVersion -AppName $app -Global:$global
     $appDir = appdir $app $global
@@ -94,10 +95,8 @@ if (!$apps) { exit 0 }
             unlink_persist_link_data $manifest $dir
             Remove-Item $dir -Recurse -Force -ErrorAction Stop
         } catch {
-            if (Test-Path $dir) {
-                error "Couldn't remove '$(friendly_path $dir)'; it may be in use."
-                continue
-            }
+            $failed = $true
+            error "Couldn't remove '$(friendly_path $dir)'; it may be in use: $_"
         }
 
         Invoke-HookScript -HookType 'post_uninstall' -Manifest $manifest -Arch $architecture
@@ -107,14 +106,19 @@ if (!$apps) { exit 0 }
     foreach ($version in $oldVersions) {
         Write-Host "Removing older version ($version)."
         $dir = versiondir $app $version $global
+        # use this version's own manifest: a stale version may persist paths the current
+        # manifest no longer lists, whose links would then be left behind. fall back to
+        # the current manifest for a forced-update leftover (_<version>.old) that has none
+        $oldManifest = installed_manifest $app $version $global
+        if (!$oldManifest) { $oldManifest = $manifest }
         try {
             # unlink all potential old link before doing recursive Remove-Item
-            unlink_persist_data $manifest $dir
-            unlink_persist_link_data $manifest $dir
+            unlink_persist_data $oldManifest $dir
+            unlink_persist_link_data $oldManifest $dir
             Remove-Item $dir -Recurse -Force -ErrorAction Stop
         } catch {
-            error "Couldn't remove '$(friendly_path $dir)'; it may be in use."
-            continue app_loop
+            $failed = $true
+            error "Couldn't remove '$(friendly_path $dir)'; it may be in use: $_"
         }
     }
     if (Test-Path ($currentDir = Join-Path $appDir 'current')) {
@@ -140,10 +144,15 @@ if (!$apps) { exit 0 }
             try {
                 Remove-Item $persist_dir -Recurse -Force -ErrorAction Stop
             } catch {
-                error "Couldn't remove '$(friendly_path $persist_dir)'; it may be in use."
-                continue
+                $failed = $true
+                error "Couldn't remove '$(friendly_path $persist_dir)'; it may be in use: $_"
             }
         }
+    }
+
+    if ($failed) {
+        error "Some parts of '$app' could not be removed; see the errors above."
+        continue
     }
 
     success "'$app' was uninstalled."
