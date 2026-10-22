@@ -144,3 +144,8 @@ You would be able to install apps from the `extras` bucket now.
 ## Other application buckets
 
 Many other application buckets hosted on GitHub can be found on [ScoopSearch](https://scoop.sh/) or via [other search engines](https://rasa.github.io/scoop-directory/#other-search-engines).
+
+## Fork customizations
+
+This fork adds `persist_link`, bucket priorities, a GitHub proxy, and
+`--ignore-hold`. See [FORK.md](FORK.md) for the details.
