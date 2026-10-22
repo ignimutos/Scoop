@@ -4,6 +4,7 @@ BeforeAll {
     . "$PSScriptRoot\..\lib\system.ps1"
     . "$PSScriptRoot\..\lib\manifest.ps1"
     . "$PSScriptRoot\..\lib\install.ps1"
+    . "$PSScriptRoot\..\lib\decompress.ps1"
 }
 
 Describe 'appname_from_url' -Tag 'Scoop' {
@@ -230,5 +231,246 @@ Describe 'is_pristine_source' -Tag 'Scoop', 'Windows' {
 
     It 'treats a file older than the extraction as pristine' {
         is_pristine_source (Get-Item $bundledFile -Force) $archiveTime | Should -BeTrue
+    }
+}
+
+Describe 'ConvertTo-Hashtable' -Tag 'Scoop' {
+    It 'converts a nested json object into hashtables' {
+        $data = ConvertTo-Hashtable ('{"a":{"b":{"c":[1,{"d":2}]}}}' | ConvertFrom-Json)
+        $data | Should -BeOfType [hashtable]
+        $data['a']['b']['c'][1]['d'] | Should -Be 2
+    }
+
+    It 'keeps scalar values' {
+        $data = ConvertTo-Hashtable ('{"n":1,"s":"x","b":true}' | ConvertFrom-Json)
+        $data['n'] | Should -Be 1
+        $data['s'] | Should -Be 'x'
+        $data['b'] | Should -BeTrue
+    }
+}
+
+Describe 'Initialize-PersistedFile' -Tag 'Scoop', 'Windows' {
+    BeforeAll {
+        $testdir = Join-Path $PSScriptRoot 'seed-persisted-test-directory'
+        New-Item $testdir -ItemType Directory -Force | Out-Null
+    }
+
+    BeforeEach {
+        $dir = Join-Path $testdir 'dir'
+        $persist_dir = Join-Path $testdir 'persist'
+        New-Item $dir, $persist_dir -ItemType Directory -Force | Out-Null
+    }
+
+    AfterEach {
+        Remove-Item (Join-Path $testdir 'dir'), (Join-Path $testdir 'persist') -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    AfterAll {
+        Remove-Item $testdir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'writes the seed when the store holds nothing' {
+        Initialize-PersistedFile -Path 'settings.ini' -Content '[Settings]', 'check = 0'
+        Get-Content (Join-Path $dir 'settings.ini') | Should -Be @('[Settings]', 'check = 0')
+    }
+
+    It 'creates an empty file when no content is given' {
+        Initialize-PersistedFile -Path 'config.ini'
+        (Get-Item (Join-Path $dir 'config.ini')).Length | Should -Be 0
+    }
+
+    It 'creates missing parent directories' {
+        Initialize-PersistedFile -Path 'Resource\config.json' -Content '{}'
+        Test-Path (Join-Path $dir 'Resource\config.json') -PathType Leaf | Should -BeTrue
+    }
+
+    It 'never overwrites stored data' {
+        Set-Content (Join-Path $persist_dir 'settings.ini') 'user data'
+        Initialize-PersistedFile -Path 'settings.ini' -Content 'seed'
+        Get-Content (Join-Path $persist_dir 'settings.ini') | Should -Be 'user data'
+        Test-Path (Join-Path $dir 'settings.ini') | Should -BeFalse
+    }
+
+    It 'treats a zero-byte file in the store as data' {
+        New-Item (Join-Path $persist_dir 'empty.cfg') -ItemType File -Force | Out-Null
+        Initialize-PersistedFile -Path 'empty.cfg'
+        Test-Path (Join-Path $dir 'empty.cfg') | Should -BeFalse
+    }
+
+    It 'replaces an empty directory in the store' {
+        New-Item (Join-Path $persist_dir 'empty.cfg') -ItemType Directory -Force | Out-Null
+        Initialize-PersistedFile -Path 'empty.cfg'
+        Test-Path (Join-Path $dir 'empty.cfg') -PathType Leaf | Should -BeTrue
+        Test-Path (Join-Path $persist_dir 'empty.cfg') | Should -BeFalse
+    }
+
+    It 'seeds several paths and maps PersistPath separately' {
+        Set-Content (Join-Path $persist_dir 'config.json') '{"user":true}'
+        Initialize-PersistedFile -Path 'a.cfg', 'Resource\config.json' -PersistPath 'a.cfg', 'config.json'
+        Test-Path (Join-Path $dir 'a.cfg') -PathType Leaf | Should -BeTrue
+        Test-Path (Join-Path $dir 'Resource\config.json') | Should -BeFalse
+        Get-Content (Join-Path $persist_dir 'config.json') | Should -Be '{"user":true}'
+    }
+
+    It 'refuses mismatched Path and PersistPath lengths' {
+        { Initialize-PersistedFile -Path 'a', 'b' -PersistPath 'c' } | Should -Throw
+    }
+}
+
+Describe 'Remove-InstallerResidue' -Tag 'Scoop', 'Windows' {
+    BeforeAll {
+        $testdir = Join-Path $PSScriptRoot 'installer-residue-test-directory'
+        New-Item $testdir -ItemType Directory -Force | Out-Null
+    }
+
+    BeforeEach {
+        $dir = Join-Path $testdir 'dir'
+        New-Item $dir -ItemType Directory -Force | Out-Null
+        Set-Content (Join-Path $dir 'app.exe') 'binary'
+        New-Item (Join-Path $dir '$PLUGINSDIR') -ItemType Directory -Force | Out-Null
+        Set-Content (Join-Path $dir '$PLUGINSDIR\app-64.7z') 'x'
+        Set-Content (Join-Path $dir '$R0') 'x'
+        Set-Content (Join-Path $dir 'Uninstall App.exe') 'x'
+        New-Item (Join-Path $dir 'resources') -ItemType Directory -Force | Out-Null
+        Set-Content (Join-Path $dir 'resources\data.bin') 'x'
+    }
+
+    AfterEach {
+        Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    AfterAll {
+        Remove-Item $testdir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'removes the plugin directory and keeps the payload' {
+        Remove-InstallerResidue
+        Test-Path (Join-Path $dir '$PLUGINSDIR') | Should -BeFalse
+        Test-Path (Join-Path $dir 'app.exe') | Should -BeTrue
+        Test-Path (Join-Path $dir 'resources\data.bin') | Should -BeTrue
+    }
+
+    It 'removes extra patterns matched against entry names' {
+        Remove-InstallerResidue -Include '$R0', 'Uninstall*'
+        Get-ChildItem $dir -Force -Name | Sort-Object | Should -Be @('app.exe', 'resources')
+    }
+
+    It 'does nothing when the residue is already gone' {
+        Remove-Item (Join-Path $dir '$PLUGINSDIR') -Recurse -Force
+        Remove-InstallerResidue -Include 'nothing*'
+        Test-Path (Join-Path $dir 'app.exe') | Should -BeTrue
+    }
+
+    It 'never removes the directory itself when $PLUGINSDIR is absent' {
+        Remove-Item (Join-Path $dir '$PLUGINSDIR') -Recurse -Force
+        Remove-InstallerResidue
+        Test-Path $dir | Should -BeTrue
+        Test-Path (Join-Path $dir 'app.exe') | Should -BeTrue
+    }
+}
+
+Describe 'Save-AppRegistry and Restore-AppRegistry' -Tag 'Scoop', 'Windows' {
+    BeforeAll {
+        $testdir = Join-Path $PSScriptRoot 'app-registry-test-directory'
+        New-Item $testdir -ItemType Directory -Force | Out-Null
+        # a unique key so a failed cleanup cannot touch anything else
+        $key = "HKCU\Software\ScoopTest_$PID"
+        $regPath = "HKCU:\Software\ScoopTest_$PID"
+    }
+
+    BeforeEach {
+        $persist_dir = Join-Path $testdir 'persist'
+        New-Item $persist_dir -ItemType Directory -Force | Out-Null
+        Remove-Item $regPath -Recurse -Force -ErrorAction SilentlyContinue
+        New-Item $regPath -Force | Out-Null
+        Set-ItemProperty $regPath -Name 'Setting' -Value 'user-value'
+    }
+
+    AfterEach {
+        Remove-Item $regPath -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item $persist_dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    AfterAll {
+        Remove-Item $testdir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'exports a key into the store' {
+        Save-AppRegistry -Map @{ 'app.reg' = $key }
+        Test-Path (Join-Path $persist_dir 'app.reg') | Should -BeTrue
+        Test-Path $regPath | Should -BeTrue
+    }
+
+    It 'restores the exported values' {
+        Save-AppRegistry -Map @{ 'app.reg' = $key }
+        Set-ItemProperty $regPath -Name 'Setting' -Value 'changed'
+        Restore-AppRegistry -Map @{ 'app.reg' = $key }
+        (Get-ItemProperty $regPath).Setting | Should -Be 'user-value'
+    }
+
+    It 'deletes the key after a successful export' {
+        Save-AppRegistry -Map @{ 'app.reg' = $key } -Delete
+        Test-Path (Join-Path $persist_dir 'app.reg') | Should -BeTrue
+        Test-Path $regPath | Should -BeFalse
+    }
+
+    It 'skips a missing key without writing a backup' {
+        Save-AppRegistry -Map @{ 'absent.reg' = 'HKCU\Software\ScoopTest_NoSuchKey' }
+        Test-Path (Join-Path $persist_dir 'absent.reg') | Should -BeFalse
+    }
+
+    It 'skips a missing backup on restore' {
+        { Restore-AppRegistry -Map @{ 'absent.reg' = $key } } | Should -Not -Throw
+        (Get-ItemProperty $regPath).Setting | Should -Be 'user-value'
+    }
+}
+
+Describe 'Get-SquirrelPayload and Expand-SquirrelApp' -Tag 'Scoop', 'Windows' {
+    BeforeAll {
+        $testdir = Join-Path $PSScriptRoot 'squirrel-app-test-directory'
+        New-Item $testdir -ItemType Directory -Force | Out-Null
+    }
+
+    BeforeEach {
+        $dir = Join-Path $testdir 'dir'
+        New-Item (Join-Path $dir '$PLUGINSDIR') -ItemType Directory -Force | Out-Null
+        $plugins = Join-Path $dir '$PLUGINSDIR'
+        foreach ($name in 'app-64.7z', 'app-32.7z', 'app-arm64.7z') {
+            Set-Content (Join-Path $plugins $name) 'x'
+        }
+    }
+
+    AfterEach {
+        Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    AfterAll {
+        Remove-Item $testdir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'picks the payload that matches the architecture' {
+        (Get-SquirrelPayload $dir '64bit').Name | Should -Be 'app-64.7z'
+        (Get-SquirrelPayload $dir '32bit').Name | Should -Be 'app-32.7z'
+        (Get-SquirrelPayload $dir 'arm64').Name | Should -Be 'app-arm64.7z'
+    }
+
+    It 'falls back to a single non-standard archive name' {
+        Remove-Item (Join-Path $dir '$PLUGINSDIR\app-*.7z')
+        Set-Content (Join-Path $dir '$PLUGINSDIR\app-1.2.3.7z') 'x'
+        (Get-SquirrelPayload $dir '64bit').Name | Should -Be 'app-1.2.3.7z'
+    }
+
+    It 'returns nothing when several fallback candidates share the name' {
+        Remove-Item (Join-Path $dir '$PLUGINSDIR\app-*.7z')
+        Set-Content (Join-Path $dir '$PLUGINSDIR\app-a.7z') 'x'
+        Set-Content (Join-Path $dir '$PLUGINSDIR\app-b.7z') 'x'
+        Get-SquirrelPayload $dir '64bit' | Should -BeNullOrEmpty
+    }
+
+    It 'expands the picked payload into the install directory' {
+        Mock Expand-7zipArchive {}
+        $architecture = 'arm64'
+        Expand-SquirrelApp
+        Should -Invoke Expand-7zipArchive -Times 1 -ParameterFilter { $Path -like '*app-arm64.7z' -and $DestinationPath -eq $dir }
     }
 }

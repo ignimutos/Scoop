@@ -827,6 +827,210 @@ function New-DirectoryJunction($source, $target) {
     }
 }
 
+# convert the PSCustomObject tree that ConvertFrom-Json returns into hashtables, so
+# Set-Value can walk it with ContainsKey on PowerShell 5.1, which has no -AsHashtable
+function ConvertTo-Hashtable($value) {
+    if ($null -eq $value) { return $null }
+    if ($value -is [System.Collections.IDictionary]) { return $value }
+    if ($value -is [System.Management.Automation.PSCustomObject] -or $value -is [System.Management.Automation.PSObject]) {
+        $table = @{}
+        foreach ($prop in $value.PSObject.Properties) {
+            $table[$prop.Name] = ConvertTo-Hashtable $prop.Value
+        }
+        return $table
+    }
+    if ($value -is [System.Array]) {
+        return , @($value | ForEach-Object { ConvertTo-Hashtable $_ })
+    }
+    return $value
+}
+
+# create a seed file under $dir when the persist store holds no data for it yet.
+# the seed has to exist before persist_data runs, so call this from pre_install:
+# persist_data moves it into the store and links it back. an empty *directory* in
+# the store is what persist_data left behind for a path with no source, so drop it
+# and seed again; a zero-byte *file* is real data and must be kept
+function Initialize-PersistedFile() {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string[]]
+        $Path,
+        [string[]]
+        $PersistPath,
+        [string[]]
+        $Content
+    )
+    if (!$PersistPath) { $PersistPath = $Path }
+    if ($PersistPath.Length -ne $Path.Length) {
+        throw "-Path and -PersistPath must have the same length."
+    }
+
+    for ($i = 0; $i -lt $Path.Length; $i++) {
+        $source = Join-Path $dir $Path[$i]
+        $target = Join-Path $persist_dir $PersistPath[$i]
+
+        if ((Test-Path $target -PathType Container) -and (is_empty_data $target)) {
+            Remove-Item $target -Force -Recurse -ErrorAction Stop
+        } elseif (Test-Path $target) {
+            continue
+        }
+
+        ensure (Split-Path -Path $source -Parent) | Out-Null
+        if ($Content) {
+            Out-UTF8File -FilePath $source -InputObject $Content
+        } else {
+            New-Item -Path $source -ItemType File -Force | Out-Null
+        }
+    }
+}
+
+# drop what an installer leaves in $dir: the NSIS plugin directory, plus any
+# explicit leftovers. pass globs as single-quoted strings, e.g. -Include '$R0'.
+# the patterns are matched against entry names, not handed to Get-ChildItem
+# -Include, which only filters leaves on 5.1
+function Remove-InstallerResidue() {
+    [CmdletBinding()]
+    param (
+        [string]
+        $Path,
+        [string[]]
+        $Include
+    )
+    if (!$Path) { $Path = $dir }
+
+    # the plugin directory name starts with a dollar sign: keep it a literal
+    $targets = @(Join-Path $Path '$PLUGINSDIR')
+    $patterns = @($Include | Where-Object { $_ })
+    if ($patterns) {
+        $entries = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction SilentlyContinue)
+        foreach ($entry in $entries) {
+            foreach ($pattern in $patterns) {
+                if ($entry.Name -like $pattern) {
+                    $targets += $entry.FullName
+                    break
+                }
+            }
+        }
+    }
+
+    foreach ($target in $targets) {
+        if (!(Test-Path -LiteralPath $target)) { continue }
+        # a pattern must not reach outside $dir
+        if (!(is_in_dir $Path $target)) {
+            warn "Refusing to remove '$target': it is outside '$Path'."
+            continue
+        }
+        try {
+            # junctions left by NSIS carry the read-only attribute
+            $item = Get-Item -LiteralPath $target -Force
+            if ($item.LinkType) { attrib -R /L $target }
+            Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction Stop
+        } catch {
+            warn "Could not remove installer residue '$target': $_"
+        }
+    }
+}
+
+# export app-owned registry keys into the persist store and, with -Delete, remove
+# them so the app starts from the restored copy on the next install. the store is
+# the only place a backup survives: a version dir is deleted by 'scoop cleanup'
+function Save-AppRegistry() {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [hashtable]
+        $Map,
+        [string]
+        $To,
+        [switch]
+        $Delete
+    )
+    if (!$To) { $To = $persist_dir }
+    ensure $To | Out-Null
+
+    foreach ($file in $Map.Keys) {
+        $key = $Map[$file]
+        if (!(Test-Path ($key -replace '^(HKCU|HKLM)\\', '$1:'))) {
+            continue
+        }
+        $target = Join-Path $To $file
+        if (!(Invoke-ExternalCommand reg @('export', $key, $target, '/y') -Quiet)) {
+            warn "Could not export registry key '$key' to '$target'."
+            continue
+        }
+        if ($Delete) {
+            Invoke-ExternalCommand reg @('delete', $key, '/f') -Quiet | Out-Null
+        }
+    }
+}
+
+# import the backups Save-AppRegistry wrote. every value in the file wins over
+# what the installer just wrote, so force any install-time setting afterwards
+function Restore-AppRegistry() {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]
+        [hashtable]
+        $Map,
+        [string]
+        $From
+    )
+    if (!$From) { $From = $persist_dir }
+
+    foreach ($file in $Map.Keys) {
+        $source = Join-Path $From $file
+        if (!(Test-Path $source)) {
+            continue
+        }
+        if (!(Invoke-ExternalCommand reg @('import', $source) -Quiet)) {
+            warn "Could not import registry backup '$source'."
+        }
+    }
+}
+
+# pick the Squirrel.Windows payload that matches an architecture: the app itself
+# always sits in app-<arch>.7z. a package that renames the file keeps only one
+# app*.7z, so a single wildcard hit is accepted; several hits are ambiguous
+function Get-SquirrelPayload($Path, $ProcessorArchitecture) {
+    $name = switch ($ProcessorArchitecture) {
+        'arm64' { 'app-arm64.7z' }
+        '32bit' { 'app-32.7z' }
+        default { 'app-64.7z' }
+    }
+
+    $plugins = Join-Path $Path '$PLUGINSDIR'
+    $exact = Join-Path $plugins $name
+    if (Test-Path -LiteralPath $exact -PathType Leaf) {
+        return Get-Item -LiteralPath $exact
+    }
+
+    $candidates = @(Get-ChildItem -LiteralPath $plugins -Filter 'app*.7z' -File -ErrorAction SilentlyContinue)
+    if ($candidates.Count -eq 1) { return $candidates[0] }
+}
+
+# expand the payload Get-SquirrelPayload picks into $dir. only expand: the leftover
+# under $PLUGINSDIR is Remove-InstallerResidue's job
+function Expand-SquirrelApp() {
+    [CmdletBinding()]
+    param (
+        [string]
+        $Path,
+        [Alias('Architecture')]
+        [string]
+        $ProcessorArchitecture
+    )
+    if (!$Path) { $Path = $dir }
+    if (!$ProcessorArchitecture) { $ProcessorArchitecture = $architecture }
+
+    $payload = Get-SquirrelPayload $Path $ProcessorArchitecture
+    if (!$payload) {
+        abort "Cannot find the $ProcessorArchitecture payload in '$(Join-Path $Path '$PLUGINSDIR')'."
+    }
+    Expand-7zipArchive $payload.FullName -DestinationPath $Path
+}
+
 # set value to file
 # behavior of set bool is different between json and otherfile
 # json set value with $true or $false
@@ -854,17 +1058,20 @@ function Set-Value() {
     [System.IO.Directory]::CreateDirectory($(Split-Path $File)) | Out-Null
     switch ($Type) {
         'json' {
+            $data = @{}
             if (Test-Path $File) {
-                $data = Get-Content -Path $File | ConvertFrom-Json -AsHashtable
-            } else {
-                $data = @{}
+                # Get-Content decodes as ANSI on 5.1, which mangles UTF-8 without a BOM
+                $parsed = ConvertFrom-Json ([System.IO.File]::ReadAllText($File, [System.Text.Encoding]::UTF8))
+                # ConvertFrom-Json returns $null for an empty file
+                if ($null -ne $parsed) { $data = ConvertTo-Hashtable $parsed }
             }
             $cur = $data
             $len = $ValuePath.Length
             for ($i = 0; $i -lt $len; $i++) {
                 $prop = $ValuePath[$i]
                 if ($i -lt ($len - 1)) {
-                    if (!$cur.ContainsKey($prop)) {
+                    # a scalar on the path (e.g. "a": 1, then a.b) cannot hold keys
+                    if ($cur[$prop] -isnot [System.Collections.IDictionary]) {
                         $cur[$prop] = @{}
                     }
                 } else {
@@ -873,17 +1080,16 @@ function Set-Value() {
                 }
                 $cur = $cur[$prop]
             }
-            $data | ConvertTo-Json | Set-Content -Path $File -Force
+            $data | ConvertTo-Json -Depth 100 | Out-UTF8File -FilePath $File
         }
         'ini' {
             if ($ValuePath.Length -ne 2) {
-                error 'INI type only support 2 path element'
-                exit 1
+                throw 'INI type only support 2 path element'
             }
             $section = $ValuePath[0]
             $prop = $ValuePath[1]
             if (Test-Path $File) {
-                $data = Get-Content -Path $File -Raw
+                $data = [System.IO.File]::ReadAllText($File, [System.Text.Encoding]::UTF8)
                 if ($data -match "(?m)^\[$section\]") {
                     $regex = "(?m)(?<=^\[$section\][^\[]*?$prop\s*=\s*)[^\r\n]*"
                     if ($data -match $regex) {
@@ -897,7 +1103,7 @@ function Set-Value() {
             } else {
                 $data = "[$section]`r`n$prop=$Value"
             }
-            $data | Set-Content -Path $File -Force
+            $data | Out-UTF8File -FilePath $File
         }
         Default {
             throw 'unknown type to process'
