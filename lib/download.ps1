@@ -635,6 +635,11 @@ function handle_special_urls($url) {
         if ((Invoke-RestMethod -Uri $privateUrl -Headers $headers).Private) {
             $url = ((Invoke-RestMethod -Uri $assetUrl -Headers $headers).Assets | Where-Object -Property Name -EQ -Value $Matches.file).Url, $Matches.filename -join ''
         }
+
+        $gh_proxy = get_config GH_PROXY ''
+        if ($gh_proxy -ne '') {
+            $url = "$gh_proxy/$url"
+        }
     }
 
     return $url
