@@ -31,6 +31,7 @@ if ($global -and !(is_admin)) {
 
 $apps | ForEach-Object {
     $app = $_
+    $app, $bucket, $null = parse_app $app # 'bucket/app' is accepted, but only the app name is used to locate the directory
 
     if ($app -eq 'scoop') {
         set_config HOLD_UPDATE_UNTIL $null | Out-Null

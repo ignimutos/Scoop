@@ -13,6 +13,7 @@
 #   -s, --skip-hash-check  Skip hash validation (use with caution!)
 #   -q, --quiet            Hide extraneous messages
 #   -a, --all              Update all apps (alternative to '*')
+#   --ignore-hold          Update held apps too; the hold is re-applied afterwards
 
 . "$PSScriptRoot\..\lib\getopt.ps1"
 . "$PSScriptRoot\..\lib\json.ps1" # 'save_install_info' in 'manifest.ps1' (indirectly)
@@ -29,10 +30,11 @@ if (get_config USE_SQLITE_CACHE) {
     . "$PSScriptRoot\..\lib\database.ps1"
 }
 
-$opt, $apps, $err = getopt $args 'gfiksqa' 'global', 'force', 'independent', 'no-cache', 'skip-hash-check', 'quiet', 'all'
+$opt, $apps, $err = getopt $args 'gfiksqa' 'global', 'force', 'independent', 'no-cache', 'skip-hash-check', 'quiet', 'all', 'ignore-hold'
 if ($err) { error "scoop update: $err"; exit 1 }
 $global = $opt.g -or $opt.global
 $force = $opt.f -or $opt.force
+$ignore_hold = $opt.'ignore-hold'
 $check_hash = !($opt.s -or $opt.'skip-hash-check')
 $use_cache = !($opt.k -or $opt.'no-cache')
 $quiet = $opt.q -or $opt.quiet
@@ -259,9 +261,13 @@ function Sync-Bucket {
 }
 
 function update($app, $global, $force = $false, $quiet = $false, $independent, $suggested, $use_cache = $true, $check_hash = $true) {
+    # $app is rewritten to 'bucket/app' (or the url) below, but the hold state is stored per app name
+    $app_name = $app
     $old_version = Select-CurrentVersion -AppName $app -Global:$global
     $old_manifest = installed_manifest $app $old_version $global
     $install = install_info $app $old_version $global
+    # install.json lives in the version dir and is rewritten on install, so keep the hold state here
+    $was_held = ($install.hold -eq $true)
 
     # re-use architecture, bucket and url from first install
     $architecture = Format-ArchitectureString $install.architecture
@@ -393,6 +399,13 @@ function update($app, $global, $force = $false, $quiet = $false, $independent, $
         $apps = @(Get-Dependency $app $architecture) -ne $app
         $apps.Where({ !(installed $_) }) + $app | ForEach-Object { install_app $_ $architecture $global $suggested $use_cache $check_hash }
     }
+
+    # re-hold the app when it was held before, since install.json is rewritten by the install above
+    if ($was_held -and $ignore_hold -and (installed $app_name $global)) {
+        $holdArgs = @()
+        if ($global) { $holdArgs += '--global' }
+        & "$PSScriptRoot\scoop-hold.ps1" $app_name @holdArgs
+    }
 }
 
 if (-not ($apps -or $all)) {
@@ -446,6 +459,11 @@ if (-not ($apps -or $all)) {
             $is_pin = $force -and !$pin.bucket -and ($pin.url -eq (usermanifest $app))
             if ($status.installed -and ($force -or $status.outdated)) {
                 if (!$status.hold) {
+                    $outdated += applist $app $global
+                    $latest = if ($is_pin) { 'HEAD (forced)' } else { $status.latest_version }
+                    Write-Host -f yellow ("$app`: $($status.version) -> $latest{0}" -f ('', ' (global)')[$global])
+                } elseif ($ignore_hold) {
+                    warn "'$app' is held to version $($status.version), but --ignore-hold was used."
                     $outdated += applist $app $global
                     $latest = if ($is_pin) { 'HEAD (forced)' } else { $status.latest_version }
                     Write-Host -f yellow ("$app`: $($status.version) -> $latest{0}" -f ('', ' (global)')[$global])
