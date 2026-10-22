@@ -52,6 +52,8 @@ function install_app($app, $architecture, $global, $suggested, $use_cache = $tru
     $fname = Invoke-ScoopDownload $app $version $manifest $bucket $architecture $dir $use_cache $check_hash
     Invoke-Extraction -Path $dir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture
     Invoke-HookScript -HookType 'pre_install' -Manifest $manifest -ProcessorArchitecture $architecture
+    # persist link, should run before installation
+    persist_link $manifest $original_dir $persist_dir
 
     Invoke-Installer -Path $dir -Name $fname -Manifest $manifest -ProcessorArchitecture $architecture -AppName $app -Global:$global
     ensure_install_dir_not_in_path $dir $global
@@ -424,6 +426,131 @@ function show_suggestions($suggested) {
     }
 }
 
+function persist_link_def($link) {
+    if ($link -is [Array]) {
+        $source = $link[0]
+        $target = $link[1]
+    } else {
+        $source = $link
+        $target = ''
+    }
+
+    return $ExecutionContext.InvokeCommand.ExpandString($source), $target
+}
+
+function persist_link($manifest, $original_dir, $persist_dir) {
+    $link = $manifest.persist_link
+    if ($link) {
+        $persist_dir = ensure $persist_dir
+
+        if ($link -is [String]) {
+            $link = @($link)
+        }
+        $link | ForEach-Object {
+            $source, $target = persist_link_def $_
+
+            $source = $source.TrimEnd('/').TrimEnd('\\')
+            # a plain string carries no target, which lands the whole persist dir here
+            $target = "$persist_dir\$target".TrimEnd('/').TrimEnd('\\')
+
+            Write-Host "Linking $source to $target"
+            if (Test-Path $source) {
+                $source_item = Get-Item $source -Force
+
+                # Check for running processes in the source directory
+                if ($source_item -is [System.IO.DirectoryInfo]) {
+                    $running = Get-Process | Where-Object {
+                        try { $_.Path -and $_.Path.StartsWith($source, [StringComparison]::OrdinalIgnoreCase) }
+                        catch { $false }
+                    }
+                    if ($running) {
+                        error "Cannot replace $source - the following processes are using it:"
+                        $running | ForEach-Object { Write-Host "  - $($_.Name) (PID: $($_.Id))" }
+                        abort "Please close these processes and try again."
+                    }
+                }
+
+                # a stale link or an empty source is not data to keep: drop it and relink
+                if (can_discard_source $source $source_item (Test-Path $target)) {
+                    remove_persist_source $source $source_item
+                } elseif (Test-Path $target) {
+                    if (is_empty_data $target) {
+                        # an empty store entry is not data either (a plain-string persist_link
+                        # pre-creates it), so move the source in rather than off to a backup
+                        Remove-Item $target -Force -Recurse -ErrorAction Stop
+                        ensure (Split-Path -Path $target) | Out-Null
+                        try {
+                            Move-Item $source $target -Force -ErrorAction Stop | Out-Null
+                        } catch {
+                            $msg = "Cannot move $source to $target : $_"
+                            if ($_.Exception.Message -match 'Access.*denied|denied') {
+                                $msg += "`n`nPossible solutions:"
+                                $msg += "`n  1. Run with administrator privileges"
+                                $msg += "`n  2. Manually delete: Remove-Item '$source' -Force -Recurse"
+                            }
+                            abort $msg
+                        }
+                    } else {
+                        # both source and target hold data, backup source
+                        $backup_path = "$target.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                        $i = 1
+                        while (Test-Path $backup_path) {
+                            $backup_path = "$target.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')($i)"
+                            $i++
+                        }
+                        try {
+                            Move-Item -Force $source $backup_path -ErrorAction Stop | Out-Null
+                            warn "Found existing data in $source, moved to $backup_path"
+                        } catch {
+                            error "Cannot move $source to $backup_path : $_"
+                            warn "Trying to remove $source instead..."
+                            try {
+                                Remove-Item $source -Force -Recurse -ErrorAction Stop | Out-Null
+                            } catch {
+                                $msg = "Cannot remove $source : $_"
+                                if ($_.Exception.Message -match 'Access.*denied|denied') {
+                                    $msg += "`n`nPossible solutions:"
+                                    $msg += "`n  1. Run 'scoop install powertoys --global' with administrator privileges"
+                                    $msg += "`n  2. Manually delete: Remove-Item '$source' -Force -Recurse"
+                                    $msg += "`n  3. Uninstall conflicting software first via Windows Settings"
+                                }
+                                abort $msg
+                            }
+                        }
+                    }
+                } else {
+                    # only source exists, move it to target
+                    try {
+                        ensure (Split-Path -Path $target) | Out-Null
+                        Move-Item $source $target -Force -ErrorAction Stop | Out-Null
+                    } catch {
+                        $msg = "Cannot move $source to $target : $_"
+                        if ($_.Exception.Message -match 'Access.*denied|denied') {
+                            $msg += "`n`nPossible solutions:"
+                            $msg += "`n  1. Run with administrator privileges"
+                            $msg += "`n  2. Manually delete: Remove-Item '$source' -Force -Recurse"
+                        }
+                        abort $msg
+                    }
+                }
+            }
+            if (!(Test-Path $target)) {
+                New-Item $target -ItemType Directory -ErrorAction SilentlyContinue | Out-Null
+            }
+
+            # create link
+            if (is_directory $target) {
+                # target is a directory, create junction
+                New-DirectoryJunction $source $target | Out-Null
+                attrib $source +R /L
+            } else {
+                # target is a file, create hard link
+                New-Item -Path $source -ItemType HardLink -Value $target | Out-Null
+            }
+        }
+    }
+}
+
 # Persistent data
 function persist_def($persist) {
     if ($persist -is [Array]) {
@@ -441,6 +568,67 @@ function persist_def($persist) {
     return $source, $target
 }
 
+# an empty directory holds no data worth backing up.
+# hidden items count as data, hence -Force
+function is_empty_data($path) {
+    $item = Get-Item $path -Force -ErrorAction SilentlyContinue
+    if ($null -eq $item) { return $true }
+    if ($item -is [System.IO.DirectoryInfo]) {
+        return !(Get-ChildItem $path -Force -ErrorAction SilentlyContinue)
+    }
+    return ($item.Length -eq 0)
+}
+
+# a source holding only the copy the archive shipped is not the user's data: for a
+# persist entry the store copy is the one the user edited (notepad++ ships plugins/,
+# themes/ and userDefineLangs/ inside the zip, so a reinstall would otherwise back that
+# bundled copy up every time and leave a stream of '.backup_*' entries in the store).
+# extracted files keep the time they were built into the archive, while anything written
+# after the extraction is newer than the version dir, so comparing the two tells a
+# bundled copy from real data. look at the files, not at the source's own mtime: that one
+# is bumped while its children are extracted and can overtake the version dir's. strict
+# comparison so a same-second write counts as data. do not use CreationTime: a move
+# resets it
+function is_pristine_source($source_item, $archive_time) {
+    if ($source_item -isnot [System.IO.DirectoryInfo]) {
+        return $source_item.LastWriteTime -lt $archive_time
+    }
+    $files = @(Get-ChildItem $source_item.FullName -Recurse -Force -File -ErrorAction SilentlyContinue)
+    # no files at all: nothing was written, an empty directory is handled by is_empty_data
+    if (!$files) { return $true }
+    $newest = ($files | Measure-Object -Property LastWriteTime -Maximum).Maximum
+    return $newest -lt $archive_time
+}
+
+# a stale link, or an empty source, carries nothing worth keeping.
+# a zero-length *file* is only dispensable when the store already holds the entry:
+# otherwise we would create a directory in the store and flip a file persist
+# (e.g. 'persist': 'config.ini') into a junction, so it falls through to the move
+function can_discard_source($source, $source_item, $target_exists) {
+    if ($source_item.LinkType) { return $true }
+    if (is_empty_data $source) {
+        if ($source_item -is [System.IO.DirectoryInfo]) { return $true }
+        return $target_exists
+    }
+    return $false
+}
+
+# remove a leftover link or an empty source.
+# junctions get the read-only attribute when they are created, which makes a bare
+# Remove-Item fail, so clear it first; report actionable hints on failure
+function remove_persist_source($source, $source_item) {
+    try {
+        if ($source_item.LinkType) { attrib -R /L $source }
+        Remove-Item $source -Force -Recurse -ErrorAction Stop | Out-Null
+    } catch {
+        $msg = "Cannot remove $source : $_"
+        if ($_.Exception.Message -match 'Access.*denied|denied') {
+            $msg += "`n`nTry: attrib -R /L `"$source`" && rmdir `"$source`""
+        }
+        abort $msg
+    }
+}
+
 function persist_data($manifest, $original_dir, $persist_dir) {
     $persist = $manifest.persist
     if ($persist) {
@@ -450,6 +638,12 @@ function persist_data($manifest, $original_dir, $persist_dir) {
             $persist = @($persist)
         }
 
+        # 'scoop update' reuses the version dir of the version being replaced when the
+        # version string is unchanged, so the extraction time is the newest mtime there.
+        # if it cannot be read, nothing counts as pristine and the backup path still runs
+        $archive_item = Get-Item $original_dir -Force -ErrorAction SilentlyContinue
+        $archive_time = if ($archive_item) { $archive_item.LastWriteTime } else { [datetime]::MinValue }
+
         $persist | ForEach-Object {
             $source, $target = persist_def $_
 
@@ -457,17 +651,50 @@ function persist_data($manifest, $original_dir, $persist_dir) {
 
             $source = $source.TrimEnd('/').TrimEnd('\\')
 
-            $source = "$dir\$source"
-            $target = "$persist_dir\$target"
+            $source = "$original_dir\$source"
+            $target = "$persist_dir\$target".TrimEnd('/').TrimEnd('\\')
+
+            $target_exists = Test-Path $target
+            $source_exists = Test-Path $source
+            $source_item = if ($source_exists) { Get-Item $source -Force } else { $null }
+
+            # a stale link, or an empty source, holds nothing worth backing up: drop it
+            if ($source_exists -and (can_discard_source $source $source_item $target_exists)) {
+                remove_persist_source $source $source_item
+                $source_exists = $false
+            }
+
+            # an empty directory in the store is not data, either - the persist_link
+            # fallback may have pre-created it. clear it so real data can move in
+            if ($source_exists -and $target_exists -and (is_empty_data $target)) {
+                Remove-Item $target -Force -Recurse -ErrorAction Stop
+                $target_exists = $false
+            }
+
+            # a source that is still the archive's own copy is not user data: drop the
+            # bundled copy rather than backing it up on every reinstall
+            if ($source_exists -and $target_exists -and (is_pristine_source $source_item $archive_time)) {
+                remove_persist_source $source $source_item
+                $source_exists = $false
+            }
 
             # if we have had persist data in the store, just create link and go
-            if (Test-Path $target) {
-                # if there is also a source data, rename it (to keep a original backup)
-                if (Test-Path $source) {
-                    Move-Item -Force $source "$source.original"
+            if ($target_exists) {
+                if ($source_exists) {
+                    # rename the source with a timestamp (to keep a backup). keep it in the
+                    # store: a version dir is deleted by 'scoop cleanup', which would take
+                    # the backup with it. two entries may share a timestamp, so number them
+                    $backup_name = "$target.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+                    $i = 1
+                    while (Test-Path $backup_name) {
+                        $backup_name = "$target.backup_$(Get-Date -Format 'yyyyMMdd_HHmmss')($i)"
+                        $i++
+                    }
+                    Move-Item -Force $source $backup_name
+                    warn "Found existing data at $source, moved to $backup_name"
                 }
+            } elseif ($source_exists) {
                 # we don't have persist data in the store, move the source to target, then create link
-            } elseif (Test-Path $source) {
                 # ensure target parent folder exist
                 ensure (Split-Path -Path $target) | Out-Null
                 Move-Item $source $target
@@ -507,10 +734,50 @@ function unlink_persist_data($manifest, $dir) {
                     # remove read-only attribute on the link
                     attrib -R /L $source_path
                     # remove the junction
-                    Remove-Item -Path $source_path -Recurse -Force -ErrorAction SilentlyContinue
+                    try {
+                        Remove-Item -Path $source_path -Recurse -Force -ErrorAction Stop
+                    } catch {
+                        $msg = "Cannot unlink persisted data '$source_path': $_"
+                        if ($_.Exception.Message -match 'Access.*denied|denied') {
+                            $msg += "`n`nTry: attrib -R /L `"$source_path`" && rmdir `"$source_path`""
+                        }
+                        throw $msg
+                    }
                 } else {
                     # remove the hard link
-                    Remove-Item -Path $source_path -Force -ErrorAction SilentlyContinue
+                    Remove-Item -Path $source_path -Force -ErrorAction Stop
+                }
+            }
+        }
+    }
+}
+
+function unlink_persist_link_data($manifest, $dir) {
+    $link = $manifest.persist_link
+    # unlink all junction / hard link in the directory
+    if ($link) {
+        @($link) | ForEach-Object {
+            $source, $null = persist_link_def $_
+            $source = Get-Item "$source" -ErrorAction SilentlyContinue
+            if ($source.LinkType) {
+                $source_path = $source.FullName
+                # directory (junction)
+                if ($source -is [System.IO.DirectoryInfo]) {
+                    # remove read-only attribute on the link
+                    attrib -R /L $source_path
+                    # remove the junction
+                    try {
+                        Remove-Item -Path $source_path -Recurse -Force -ErrorAction Stop
+                    } catch {
+                        $msg = "Cannot unlink persisted data '$source_path': $_"
+                        if ($_.Exception.Message -match 'Access.*denied|denied') {
+                            $msg += "`n`nTry: attrib -R /L `"$source_path`" && rmdir `"$source_path`""
+                        }
+                        throw $msg
+                    }
+                } else {
+                    # remove the hard link
+                    Remove-Item -Path $source_path -Force -ErrorAction Stop
                 }
             }
         }

@@ -92,3 +92,143 @@ Describe 'persist_def' -Tag 'Scoop' {
         $target | Should -Be 'foo'
     }
 }
+
+Describe 'is_empty_data' -Tag 'Scoop', 'Windows' {
+    BeforeAll {
+        $testdir = Join-Path $PSScriptRoot 'empty-data-test-directory'
+        New-Item $testdir -ItemType Directory -Force | Out-Null
+    }
+
+    AfterAll {
+        Remove-Item $testdir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'treats a missing path as empty' {
+        is_empty_data (Join-Path $testdir 'does-not-exist') | Should -BeTrue
+    }
+
+    It 'treats an empty directory as empty' {
+        $empty = Join-Path $testdir 'empty'
+        New-Item $empty -ItemType Directory -Force | Out-Null
+        is_empty_data $empty | Should -BeTrue
+    }
+
+    It 'treats a directory with a hidden file as data' {
+        $hidden = Join-Path $testdir 'hidden'
+        New-Item $hidden -ItemType Directory -Force | Out-Null
+        New-Item (Join-Path $hidden '.gitignore') -ItemType File -Force | Out-Null
+        is_empty_data $hidden | Should -BeFalse
+    }
+
+    It 'treats a directory with a file as data' {
+        $full = Join-Path $testdir 'full'
+        New-Item $full -ItemType Directory -Force | Out-Null
+        New-Item (Join-Path $full 'file.txt') -ItemType File | Out-Null
+        is_empty_data $full | Should -BeFalse
+    }
+
+    It 'treats a zero-byte file as empty and a non-empty file as data' {
+        $zero = Join-Path $testdir 'zero.txt'
+        New-Item $zero -ItemType File -Force | Out-Null
+        is_empty_data $zero | Should -BeTrue
+
+        $real = Join-Path $testdir 'real.txt'
+        Set-Content -Path $real -Value 'data'
+        is_empty_data $real | Should -BeFalse
+    }
+}
+
+Describe 'can_discard_source' -Tag 'Scoop', 'Windows' {
+    BeforeAll {
+        $testdir = Join-Path $PSScriptRoot 'discard-source-test-directory'
+        New-Item $testdir -ItemType Directory -Force | Out-Null
+
+        $empty = Join-Path $testdir 'empty'
+        New-Item $empty -ItemType Directory -Force | Out-Null
+
+        $full = Join-Path $testdir 'full'
+        New-Item $full -ItemType Directory -Force | Out-Null
+        New-Item (Join-Path $full 'file.txt') -ItemType File | Out-Null
+
+        $zeroFile = Join-Path $testdir 'zero.txt'
+        New-Item $zeroFile -ItemType File -Force | Out-Null
+
+        $linkTarget = Join-Path $testdir 'link-target'
+        New-Item $linkTarget -ItemType Directory -Force | Out-Null
+        $link = Join-Path $testdir 'link'
+        New-Item -Path $link -ItemType Junction -Value $linkTarget | Out-Null
+    }
+
+    AfterAll {
+        Remove-Item $testdir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'discards a stale link' {
+        can_discard_source $link (Get-Item $link -Force) $true | Should -BeTrue
+        can_discard_source $link (Get-Item $link -Force) $false | Should -BeTrue
+    }
+
+    It 'discards an empty directory whether or not the store has data' {
+        can_discard_source $empty (Get-Item $empty -Force) $true | Should -BeTrue
+        can_discard_source $empty (Get-Item $empty -Force) $false | Should -BeTrue
+    }
+
+    It 'keeps a directory that holds data' {
+        can_discard_source $full (Get-Item $full -Force) $true | Should -BeFalse
+        can_discard_source $full (Get-Item $full -Force) $false | Should -BeFalse
+    }
+
+    It 'keeps a zero-byte file when the store has no entry for it' {
+        # dropping it would create a directory in the store and flip a file
+        # persist into a junction
+        can_discard_source $zeroFile (Get-Item $zeroFile -Force) $false | Should -BeFalse
+    }
+
+    It 'discards a zero-byte file when the store already has the entry' {
+        can_discard_source $zeroFile (Get-Item $zeroFile -Force) $true | Should -BeTrue
+    }
+}
+
+Describe 'is_pristine_source' -Tag 'Scoop', 'Windows' {
+    BeforeAll {
+        $testdir = Join-Path $PSScriptRoot 'pristine-source-test-directory'
+        New-Item $testdir -ItemType Directory -Force | Out-Null
+
+        # the version dir's time, taken right after 'extraction': a second after the
+        # bundled files are created, before the app rewrites anything
+        $archiveTime = (Get-Date).AddSeconds(1)
+
+        # the archive's own copy: files carry their build time, no newer than the version dir
+        $bundled = Join-Path $testdir 'themes'
+        New-Item $bundled -ItemType Directory -Force | Out-Null
+        New-Item (Join-Path $bundled 'Bespin.xml') -ItemType File -Force | Out-Null
+        # the directory itself can be newer than the version dir while its files are not
+        (Get-Item $bundled).LastWriteTime = (Get-Date).AddSeconds(30)
+
+        # a copy the app rewrote after extraction, so its files are newer
+        $rewritten = Join-Path $testdir 'plugins'
+        New-Item $rewritten -ItemType Directory -Force | Out-Null
+        New-Item (Join-Path $rewritten 'mine.dll') -ItemType File -Force | Out-Null
+        (Get-Item (Join-Path $rewritten 'mine.dll')).LastWriteTime = (Get-Date).AddMinutes(1)
+
+        # a persist file (e.g. config.xml) shipped by the archive
+        $bundledFile = Join-Path $testdir 'nativeLang.xml'
+        New-Item $bundledFile -ItemType File -Force | Out-Null
+    }
+
+    AfterAll {
+        Remove-Item $testdir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'treats a directory holding only archive-time files as pristine' {
+        is_pristine_source (Get-Item $bundled -Force) $archiveTime | Should -BeTrue
+    }
+
+    It 'keeps a directory the app wrote to after extraction' {
+        is_pristine_source (Get-Item $rewritten -Force) $archiveTime | Should -BeFalse
+    }
+
+    It 'treats a file older than the extraction as pristine' {
+        is_pristine_source (Get-Item $bundledFile -Force) $archiveTime | Should -BeTrue
+    }
+}

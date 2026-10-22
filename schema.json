@@ -558,6 +558,9 @@
         "persist": {
             "$ref": "#/definitions/stringOrArrayOfStringsOrAnArrayOfArrayOfStrings"
         },
+        "persist_link": {
+            "$ref": "#/definitions/stringOrArrayOfStringsOrAnArrayOfArrayOfStrings"
+        },
         "checkver": {
             "$ref": "#/definitions/checkver"
         },
