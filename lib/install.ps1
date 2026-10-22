@@ -510,7 +510,7 @@ function persist_link($manifest, $original_dir, $persist_dir) {
                                 $msg = "Cannot remove $source : $_"
                                 if ($_.Exception.Message -match 'Access.*denied|denied') {
                                     $msg += "`n`nPossible solutions:"
-                                    $msg += "`n  1. Run 'scoop install powertoys --global' with administrator privileges"
+                                    $msg += "`n  1. Run the same command with administrator privileges"
                                     $msg += "`n  2. Manually delete: Remove-Item '$source' -Force -Recurse"
                                     $msg += "`n  3. Uninstall conflicting software first via Windows Settings"
                                 }
@@ -720,6 +720,25 @@ function persist_data($manifest, $original_dir, $persist_dir) {
     }
 }
 
+# remove a junction or hard link left by a persist entry. junctions get the
+# read-only attribute when they are created, which makes a bare Remove-Item fail
+function remove_persist_link($source_path, $is_directory) {
+    if ($is_directory) {
+        attrib -R /L $source_path
+        try {
+            Remove-Item -Path $source_path -Recurse -Force -ErrorAction Stop
+        } catch {
+            $msg = "Cannot unlink persisted data '$source_path': $_"
+            if ($_.Exception.Message -match 'Access.*denied|denied') {
+                $msg += "`n`nTry: attrib -R /L `"$source_path`" && rmdir `"$source_path`""
+            }
+            throw $msg
+        }
+    } else {
+        Remove-Item -Path $source_path -Force -ErrorAction Stop
+    }
+}
+
 function unlink_persist_data($manifest, $dir) {
     $persist = $manifest.persist
     # unlink all junction / hard link in the directory
@@ -728,25 +747,7 @@ function unlink_persist_data($manifest, $dir) {
             $source, $null = persist_def $_
             $source = Get-Item "$dir\$source" -ErrorAction SilentlyContinue
             if ($source.LinkType) {
-                $source_path = $source.FullName
-                # directory (junction)
-                if ($source -is [System.IO.DirectoryInfo]) {
-                    # remove read-only attribute on the link
-                    attrib -R /L $source_path
-                    # remove the junction
-                    try {
-                        Remove-Item -Path $source_path -Recurse -Force -ErrorAction Stop
-                    } catch {
-                        $msg = "Cannot unlink persisted data '$source_path': $_"
-                        if ($_.Exception.Message -match 'Access.*denied|denied') {
-                            $msg += "`n`nTry: attrib -R /L `"$source_path`" && rmdir `"$source_path`""
-                        }
-                        throw $msg
-                    }
-                } else {
-                    # remove the hard link
-                    Remove-Item -Path $source_path -Force -ErrorAction Stop
-                }
+                remove_persist_link $source.FullName ($source -is [System.IO.DirectoryInfo])
             }
         }
     }
@@ -760,25 +761,7 @@ function unlink_persist_link_data($manifest, $dir) {
             $source, $null = persist_link_def $_
             $source = Get-Item "$source" -ErrorAction SilentlyContinue
             if ($source.LinkType) {
-                $source_path = $source.FullName
-                # directory (junction)
-                if ($source -is [System.IO.DirectoryInfo]) {
-                    # remove read-only attribute on the link
-                    attrib -R /L $source_path
-                    # remove the junction
-                    try {
-                        Remove-Item -Path $source_path -Recurse -Force -ErrorAction Stop
-                    } catch {
-                        $msg = "Cannot unlink persisted data '$source_path': $_"
-                        if ($_.Exception.Message -match 'Access.*denied|denied') {
-                            $msg += "`n`nTry: attrib -R /L `"$source_path`" && rmdir `"$source_path`""
-                        }
-                        throw $msg
-                    }
-                } else {
-                    # remove the hard link
-                    Remove-Item -Path $source_path -Force -ErrorAction Stop
-                }
+                remove_persist_link $source.FullName ($source -is [System.IO.DirectoryInfo])
             }
         }
     }
@@ -954,7 +937,8 @@ function Save-AppRegistry() {
 
     foreach ($file in $Map.Keys) {
         $key = $Map[$file]
-        if (!(Test-Path ($key -replace '^(HKCU|HKLM)\\', '$1:'))) {
+        # keep the separator: HKCU:\Software\X -> HKCU:\Software\X, not HKCU:Software\X
+        if (!(Test-Path ($key -replace '^(HKCU|HKLM)\\', '$1:\'))) {
             continue
         }
         $target = Join-Path $To $file
@@ -1028,7 +1012,12 @@ function Expand-SquirrelApp() {
 
     $payload = Get-SquirrelPayload $Path $ProcessorArchitecture
     if (!$payload) {
-        abort "Cannot find the $ProcessorArchitecture payload in '$(Join-Path $Path '$PLUGINSDIR')'."
+        $plugins = Join-Path $Path '$PLUGINSDIR'
+        $candidates = @(Get-ChildItem -LiteralPath $plugins -Filter 'app*.7z' -File -ErrorAction SilentlyContinue)
+        if ($candidates.Count -eq 0) {
+            abort "Cannot find the $ProcessorArchitecture payload in '$plugins'."
+        }
+        abort "Expected one app*.7z for $ProcessorArchitecture in '$plugins', found $($candidates.Count): $($candidates.Name -join ', ')."
     }
     Expand-7zipArchive $payload.FullName -DestinationPath $Path
 }

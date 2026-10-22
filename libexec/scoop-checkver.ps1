@@ -35,7 +35,7 @@ if ($target[0] -like '*/*') {
     $dir = $bucketsdir
 }
 
-$netsted_args = @{
+$nested_args = @{
     App         = $app
     Dir         = $dir
     Version     = $version
@@ -44,7 +44,7 @@ $netsted_args = @{
     SkipUpdated = $skip_updated
     ThrowError  = $throw_error
 }
-debug "checkver $($netsted_args.GetEnumerator() | ForEach-Object { $_ })"
+debug "checkver $($nested_args.GetEnumerator() | ForEach-Object { $_ })"
 & "$PSScriptRoot\..\bin\checkver.ps1" @netsted_args
 
 exit 0

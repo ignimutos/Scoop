@@ -362,6 +362,11 @@ Describe 'Remove-InstallerResidue' -Tag 'Scoop', 'Windows' {
         Get-ChildItem $dir -Force -Name | Sort-Object | Should -Be @('app.exe', 'resources')
     }
 
+    It 'accepts the $* pattern without touching ordinary files' {
+        Remove-InstallerResidue -Include '$*'
+        Get-ChildItem $dir -Force -Name | Sort-Object | Should -Be @('app.exe', 'resources', 'Uninstall App.exe')
+    }
+
     It 'does nothing when the residue is already gone' {
         Remove-Item (Join-Path $dir '$PLUGINSDIR') -Recurse -Force
         Remove-InstallerResidue -Include 'nothing*'

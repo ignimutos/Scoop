@@ -70,6 +70,8 @@ function Get-LocalBucket {
         $bucketDefaultPriority = bucket_default_priority
         $knownBuckets = known_buckets
         $bucketNames | ForEach-Object {
+            # reset per bucket: a value left over from the previous one would win
+            $priority = $null
             if ($knownBuckets -contains $_) {
                 # default priority is `100 - index of known buckets`
                 $priority = 100 - $knownBuckets.IndexOf($_)

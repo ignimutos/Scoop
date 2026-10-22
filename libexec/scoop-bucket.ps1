@@ -45,7 +45,7 @@ switch ($cmd) {
             if ($arg2 -match '\d+') {
                 $priority = [int]$arg2
             } else {
-                "Wrong priority '$arg2'. Try int."
+                error "Wrong priority '$arg2'. Try int."
                 $usage_add
                 exit 1
             }
@@ -80,8 +80,8 @@ switch ($cmd) {
         if ($arg1 -and ($arg1 -match '\d+')) {
             $priority = [int]$arg1
         } else {
-            "Wrong priority '$arg1'. Try int."
-            $usage_add
+            error "Wrong priority '$arg1'. Try int."
+            $usage_alter
             exit 1
         }
 

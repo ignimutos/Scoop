@@ -33,11 +33,11 @@ These run inside manifest hooks, so they see `$dir`, `$original_dir`,
 
 | Helper | Hook | What it does |
 | --- | --- | --- |
-| `Initialize-PersistedFile -Path <p> [-PersistPath <q>] [-Content <lines>]` | `pre_install` | Seeds a file under `$dir` when the store holds nothing for it. An empty store directory is replaced; a zero-byte file counts as data. |
-| `Remove-InstallerResidue [-Include <patterns>]` | install or post_install | Removes `$PLUGINSDIR`, plus entries whose name matches a pattern. |
-| `Save-AppRegistry -Map <file = key> [-Delete]` | `uninstaller` or `post_uninstall` | Exports each existing key into the persist store; with `-Delete`, removes it afterwards. |
-| `Restore-AppRegistry -Map <file = key>` | `post_install` | Imports each backup that exists. An import overwrites install-time values, so set forced values after this call. |
-| `Expand-SquirrelApp` | `pre_install` | Expands `$PLUGINSDIR\app-<arch>.7z` into `$dir`. A package that renames the file is accepted when exactly one `app*.7z` exists. |
+| `Initialize-PersistedFile -Path <p> [-PersistPath <q>] [-Content <lines>]` | `pre_install` | Seeds a file under `$dir` when the store holds nothing for it. An empty store directory is replaced; a zero-byte file counts as data. `-PersistPath` maps a nested source to a flat store name. |
+| `Remove-InstallerResidue [-Path <dir>] [-Include <patterns>]` | install or post_install | Removes `$PLUGINSDIR`, plus entries whose name matches a pattern. A target outside `-Path` is refused. |
+| `Save-AppRegistry -Map <file = key> [-To <dir>] [-Delete]` | `uninstaller` or `post_uninstall` | Exports each existing key into `-To` (default `$persist_dir`). With `-Delete`, removes it after a successful export. |
+| `Restore-AppRegistry -Map <file = key> [-From <dir>]` | `post_install` | Imports each backup from `-From` (default `$persist_dir`) that exists. An import overwrites install-time values, so set forced values after this call. |
+| `Expand-SquirrelApp [-Path <dir>] [-Architecture <arch>]` | `pre_install` | Expands `$PLUGINSDIR\app-<arch>.7z` into `-Path`. A package that renames the file is accepted when exactly one `app*.7z` exists. |
 
 ## persist_link
 

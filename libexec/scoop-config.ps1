@@ -168,10 +168,14 @@
 #       See: 'https://aria2.github.io/manual/en/html/aria2c.html#options'
 #
 # buckets configuration
-# -------------------
+# ---------------------
 #
 # bucket-default-priority:
-#       Default priority of not known buckets.
+#       Default priority of unknown buckets.
+#
+# bucket-priority:
+#       Per-bucket priorities, written by 'scoop bucket add' and
+#       'scoop bucket alter'. An entry here wins over the default.
 
 param($name, $value)
 

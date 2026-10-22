@@ -147,5 +147,6 @@ Many other application buckets hosted on GitHub can be found on [ScoopSearch](ht
 
 ## Fork customizations
 
-This fork adds `persist_link`, bucket priorities, a GitHub proxy, and
-`--ignore-hold`. See [FORK.md](FORK.md) for the details.
+This fork adds `scoop checkver`, `persist_link`, `Set-Value`, manifest hook
+helpers, bucket priorities, a GitHub proxy, and `--ignore-hold`.
+See [FORK.md](FORK.md) for the details.
