@@ -358,6 +358,7 @@ function update($app, $global, $force = $false, $quiet = $false, $independent, $
     # as the reference directory. Otherwise it will just be the version
     # directory.
     $refdir = unlink_current $dir
+    unlink_persist_link_data $old_manifest $refdir
     uninstall_psmodule $old_manifest $refdir $global
     env_rm_path $old_manifest $refdir $global $architecture
     env_rm $old_manifest $global $architecture

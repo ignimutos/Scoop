@@ -45,7 +45,10 @@ function cleanup($app, $global, $verbose, $cache) {
         $version = $_
         Write-Host " $version" -NoNewline
         $dir = versiondir $app $version $global
-        # unlink all potential old link before doing recursive Remove-Item
+        # unlink the version dir's own links before doing recursive Remove-Item.
+        # do NOT unlink persist_link here: its source lives outside the version dir and is
+        # shared by every version, so removing it would strand the still-installed current
+        # version without its config - and nothing recreates it after a cleanup
         unlink_persist_data (installed_manifest $app $version $global) $dir
         Remove-Item $dir -ErrorAction Stop -Recurse -Force
     }

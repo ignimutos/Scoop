@@ -87,7 +87,11 @@ $apps | ForEach-Object {
     env_set $manifest $global $architecture
     # unlink all potential old link before re-persisting
     unlink_persist_data $manifest $original_dir
+    unlink_persist_link_data $manifest $original_dir
     persist_data $manifest $original_dir $persist_dir
+    # persist_link targets live outside the app dir, but reset may be run after the
+    # links were removed by hand, so restore them the same way install does
+    persist_link $manifest $original_dir $persist_dir
     persist_permission $manifest $global
 }
 
