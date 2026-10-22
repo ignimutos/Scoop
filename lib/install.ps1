@@ -826,3 +826,82 @@ function New-DirectoryJunction($source, $target) {
         New-Item -Path $source -ItemType Junction -Value $target
     }
 }
+
+# set value to file
+# behavior of set bool is different between json and otherfile
+# json set value with $true or $false
+# other file set value with string 'true' or 'false'
+function Set-Value() {
+    param (
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string]$File,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [string[]]$ValuePath,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateNotNullOrEmpty()]
+        [object]$Value,
+
+        [ValidateNotNullOrEmpty()]
+        [string]$Type = [System.IO.Path]::GetExtension($File).TrimStart('.').ToLower()
+    )
+    if (![System.IO.Path]::IsPathRooted($File)) {
+        $File = "$persist_dir\$File"
+    }
+    [System.IO.Directory]::CreateDirectory($(Split-Path $File)) | Out-Null
+    switch ($Type) {
+        'json' {
+            if (Test-Path $File) {
+                $data = Get-Content -Path $File | ConvertFrom-Json -AsHashtable
+            } else {
+                $data = @{}
+            }
+            $cur = $data
+            $len = $ValuePath.Length
+            for ($i = 0; $i -lt $len; $i++) {
+                $prop = $ValuePath[$i]
+                if ($i -lt ($len - 1)) {
+                    if (!$cur.ContainsKey($prop)) {
+                        $cur[$prop] = @{}
+                    }
+                } else {
+                    $cur[$prop] = $Value
+                    break
+                }
+                $cur = $cur[$prop]
+            }
+            $data | ConvertTo-Json | Set-Content -Path $File -Force
+        }
+        'ini' {
+            if ($ValuePath.Length -ne 2) {
+                error 'INI type only support 2 path element'
+                exit 1
+            }
+            $section = $ValuePath[0]
+            $prop = $ValuePath[1]
+            if (Test-Path $File) {
+                $data = Get-Content -Path $File -Raw
+                if ($data -match "(?m)^\[$section\]") {
+                    $regex = "(?m)(?<=^\[$section\][^\[]*?$prop\s*=\s*)[^\r\n]*"
+                    if ($data -match $regex) {
+                        $data = $data -replace $regex, $Value
+                    } else {
+                        $data = $data -replace "(?m)(\[$section\])", "`$1`r`n$prop=$Value"
+                    }
+                } else {
+                    $data += "`r`n[$section]`r`n$prop=$Value"
+                }
+            } else {
+                $data = "[$section]`r`n$prop=$Value"
+            }
+            $data | Set-Content -Path $File -Force
+        }
+        Default {
+            throw 'unknown type to process'
+        }
+    }
+
+}
