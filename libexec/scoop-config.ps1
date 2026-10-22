@@ -162,6 +162,12 @@
 # aria2-options:
 #       Array of additional aria2 options.
 #       See: 'https://aria2.github.io/manual/en/html/aria2c.html#options'
+#
+# buckets configuration
+# -------------------
+#
+# bucket-default-priority:
+#       Default priority of not known buckets.
 
 param($name, $value)
 

@@ -53,6 +53,10 @@ function apps_in_bucket($dir) {
     return (Get-ChildItem $dir -Filter '*.json' -Recurse).BaseName
 }
 
+function bucket_default_priority() {
+    get_config 'bucket-default-priority' 200
+}
+
 function Get-LocalBucket {
     <#
     .SYNOPSIS
@@ -62,15 +66,26 @@ function Get-LocalBucket {
     if ($null -eq $bucketNames) {
         return @() # Return a zero-length list instead of $null.
     } else {
+        $bucketPriority = get_config 'bucket-priority' ([PSCustomObject]@{})
+        $bucketDefaultPriority = bucket_default_priority
         $knownBuckets = known_buckets
-        for ($i = $knownBuckets.Count - 1; $i -ge 0 ; $i--) {
-            $name = $knownBuckets[$i]
-            if ($bucketNames.Contains($name)) {
-                [void]$bucketNames.Remove($name)
-                $bucketNames.Insert(0, $name)
+        $bucketNames | ForEach-Object {
+            if ($knownBuckets -contains $_) {
+                # default priority is `100 - index of known buckets`
+                $priority = 100 - $knownBuckets.IndexOf($_)
             }
-        }
-        return $bucketNames
+
+            if (Get-Member -InputObject $bucketPriority -Name $_ -MemberType Properties) {
+                $priority = $bucketPriority.$_
+            } elseif (!$priority) {
+                $priority = $bucketDefaultPriority
+            }
+
+            [PSCustomObject]@{
+                Name     = $_
+                Priority = $priority
+            }
+        } | Sort-Object -Property Priority, Name -Descending | ForEach-Object { $_.Name }
     }
 }
 
@@ -120,7 +135,7 @@ function list_buckets {
     ,$buckets
 }
 
-function add_bucket($name, $repo) {
+function add_bucket($name, $repo, $priority) {
     if (!(Test-GitAvailable)) {
         error "Git is required for buckets. Run 'scoop install git' and try again."
         return 1
@@ -165,8 +180,31 @@ function add_bucket($name, $repo) {
         info 'Updating cache...'
         Set-ScoopDB -Path (Get-ChildItem (Find-BucketDirectory $name) -Filter '*.json' -Recurse).FullName
     }
+
+    if (!$priority) {
+        $priority = bucket_default_priority
+    }
+    $bucketPriority = get_config 'bucket-priority' ([PSCustomObject]@{})
+    if (Get-Member -InputObject $bucketPriority -Name $name -MemberType Properties) {
+        $bucketPriority.$name = $priority
+    } else {
+        Add-Member -InputObject $bucketPriority -Name $name -MemberType NoteProperty -Value $priority
+    }
+    set_config 'bucket-priority' $bucketPriority
+
     success "The $name bucket was added successfully."
     return 0
+}
+
+function alter_bucket($name, $priority) {
+    $bucketPriority = get_config 'bucket-priority' ([PSCustomObject]@{})
+    if (Get-Member -InputObject $bucketPriority -Name $name -MemberType Properties) {
+        $bucketPriority.$name = $priority
+    } else {
+        Add-Member -InputObject $bucketPriority -Name $name -MemberType NoteProperty -Value $priority
+    }
+    set_config 'bucket-priority' $bucketPriority
+    success "The $name bucket was altered successfully."
 }
 
 function rm_bucket($name) {
@@ -181,6 +219,13 @@ function rm_bucket($name) {
         info 'Updating cache...'
         Remove-ScoopDBItem -Bucket $name
     }
+
+    $bucketPriority = get_config 'bucket-priority' ([PSCustomObject]@{})
+    if (Get-Member -InputObject $bucketPriority -Name $name -MemberType Properties) {
+        $bucketPriority = $bucketPriority | Select-Object * -ExcludeProperty $name
+        set_config 'bucket-priority' $bucketPriority
+    }
+
     success "The $name bucket was removed successfully."
     return 0
 }
