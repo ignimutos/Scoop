@@ -832,7 +832,9 @@ function New-DirectoryJunction($source, $target) {
 function ConvertTo-Hashtable($value) {
     if ($null -eq $value) { return $null }
     if ($value -is [System.Collections.IDictionary]) { return $value }
-    if ($value -is [System.Management.Automation.PSCustomObject] -or $value -is [System.Management.Automation.PSObject]) {
+    # only PSCustomObject is a json object; every value is -is [PSObject], so that
+    # test would swallow arrays and scalars too
+    if ($value -is [System.Management.Automation.PSCustomObject]) {
         $table = @{}
         foreach ($prop in $value.PSObject.Properties) {
             $table[$prop.Name] = ConvertTo-Hashtable $prop.Value
@@ -1063,7 +1065,12 @@ function Set-Value() {
                 # Get-Content decodes as ANSI on 5.1, which mangles UTF-8 without a BOM
                 $parsed = ConvertFrom-Json ([System.IO.File]::ReadAllText($File, [System.Text.Encoding]::UTF8))
                 # ConvertFrom-Json returns $null for an empty file
-                if ($null -ne $parsed) { $data = ConvertTo-Hashtable $parsed }
+                if ($null -ne $parsed) {
+                    $data = ConvertTo-Hashtable $parsed
+                    # a top-level array cannot hold named keys: start over instead of
+                    # serializing the array's own properties into the file
+                    if ($data -isnot [System.Collections.IDictionary]) { $data = @{} }
+                }
             }
             $cur = $data
             $len = $ValuePath.Length

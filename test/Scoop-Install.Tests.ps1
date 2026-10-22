@@ -247,6 +247,13 @@ Describe 'ConvertTo-Hashtable' -Tag 'Scoop' {
         $data['s'] | Should -Be 'x'
         $data['b'] | Should -BeTrue
     }
+
+    It 'keeps a nested array as an array' {
+        # every value is -is [PSObject]; only PSCustomObject marks a json object
+        $data = ConvertTo-Hashtable ('{"a":[1,{"b":2}]}' | ConvertFrom-Json)
+        ,$data['a'] | Should -BeOfType [System.Array]
+        $data['a'][1]['b'] | Should -Be 2
+    }
 }
 
 Describe 'Initialize-PersistedFile' -Tag 'Scoop', 'Windows' {
@@ -472,5 +479,69 @@ Describe 'Get-SquirrelPayload and Expand-SquirrelApp' -Tag 'Scoop', 'Windows' {
         $architecture = 'arm64'
         Expand-SquirrelApp
         Should -Invoke Expand-7zipArchive -Times 1 -ParameterFilter { $Path -like '*app-arm64.7z' -and $DestinationPath -eq $dir }
+    }
+}
+
+Describe 'Set-Value' -Tag 'Scoop', 'Windows' {
+    BeforeAll {
+        $testdir = Join-Path $PSScriptRoot 'set-value-test-directory'
+        New-Item $testdir -ItemType Directory -Force | Out-Null
+    }
+
+    BeforeEach {
+        $persist_dir = Join-Path $testdir 'persist'
+        New-Item $persist_dir -ItemType Directory -Force | Out-Null
+    }
+
+    AfterEach {
+        Remove-Item $persist_dir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    AfterAll {
+        Remove-Item $testdir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'writes a value a few levels down without truncating it' {
+        Set-Value 'config.json' 'a', 'b', 'c', 'd' 42
+        $json = [System.IO.File]::ReadAllText((Join-Path $persist_dir 'config.json'), [System.Text.Encoding]::UTF8)
+        $json | Should -Not -Match 'System\.(Collections|Management)'
+        ($json | ConvertFrom-Json).a.b.c.d | Should -Be 42
+    }
+
+    It 'keeps non-ASCII values intact' {
+        $value = [string][char]0x4E2D + [string][char]0x6587
+        Set-Value 'config.json' 'name' $value
+        $bytes = [System.IO.File]::ReadAllBytes((Join-Path $persist_dir 'config.json'))
+        ($bytes[0] -eq 0xEF) | Should -BeFalse
+        ([System.IO.File]::ReadAllText((Join-Path $persist_dir 'config.json'), [System.Text.Encoding]::UTF8) | ConvertFrom-Json).name | Should -Be $value
+    }
+
+    It 'turns an empty file into an object' {
+        New-Item (Join-Path $persist_dir 'config.json') -ItemType File -Force | Out-Null
+        Set-Value 'config.json' 'k' 'v'
+        ([System.IO.File]::ReadAllText((Join-Path $persist_dir 'config.json')) | ConvertFrom-Json).k | Should -Be 'v'
+    }
+
+    It 'replaces a scalar that sits on the path' {
+        Set-Content (Join-Path $persist_dir 'config.json') '{"a":1}'
+        Set-Value 'config.json' 'a', 'b' 2
+        ([System.IO.File]::ReadAllText((Join-Path $persist_dir 'config.json')) | ConvertFrom-Json).a.b | Should -Be 2
+    }
+
+    It 'starts over when the top-level value is an array' {
+        Set-Content (Join-Path $persist_dir 'config.json') '[1,2,3]'
+        Set-Value 'config.json' 'k' 'v'
+        $json = [System.IO.File]::ReadAllText((Join-Path $persist_dir 'config.json')) | ConvertFrom-Json
+        $json.k | Should -Be 'v'
+        @($json.PSObject.Properties.Name) | Should -Be @('k')
+    }
+
+    It 'updates an existing ini key and appends a missing one' {
+        Set-Content (Join-Path $persist_dir 'config.ini') "[Section]`r`nKey = 1"
+        Set-Value 'config.ini' 'Section', 'Key' 2
+        Set-Value 'config.ini' 'Section', 'Extra' 3
+        $content = Get-Content (Join-Path $persist_dir 'config.ini') -Raw
+        $content | Should -Match 'Key\s*=\s*2'
+        $content | Should -Match 'Extra=3'
     }
 }
