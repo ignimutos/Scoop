@@ -25,6 +25,8 @@ It tracks upstream `master` and keeps a small set of additions on top.
 6. `gh_proxy` config key routes GitHub release downloads through a
    [gh-proxy](https://github.com/hunshcn/gh-proxy) mirror.
 7. `scoop update --ignore-hold` updates held apps and re-applies the hold.
+8. The held-app warning in `scoop update` shows the bucket version when it is
+   newer, so the version gap is visible without running `scoop status`.
 
 ## Hook helpers
 

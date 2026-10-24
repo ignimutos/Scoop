@@ -468,7 +468,16 @@ if (-not ($apps -or $all)) {
                     $latest = if ($is_pin) { 'HEAD (forced)' } else { $status.latest_version }
                     Write-Host -f yellow ("$app`: $($status.version) -> $latest{0}" -f ('', ' (global)')[$global])
                 } else {
-                    warn "'$app' is held to version $($status.version)"
+                    $heldMessage = "'$app' is held to version $($status.version)"
+                    # FORCE_UPDATE makes $status.outdated true for any version change, and a pin
+                    # targets the bucket HEAD rather than a version, so compare the direction
+                    $newer = !$is_pin -and $status.latest_version -and
+                        ((Compare-Version -ReferenceVersion $status.version -DifferenceVersion $status.latest_version) -gt 0)
+                    if ($newer) {
+                        warn "$heldMessage (latest version: $($status.latest_version))"
+                    } else {
+                        warn $heldMessage
+                    }
                 }
             } elseif ($apps_param -ne '*' -and !$all) {
                 if ($status.installed) {
